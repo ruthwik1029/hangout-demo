@@ -23,6 +23,13 @@ import {
   PickupSettings,
   AdminAuditLog,
   OrderStatusHistory,
+  TableStatus,
+  OrderItemStatus,
+  KitchenStation,
+  BillSplit,
+  BillSplitType,
+  StaffAuditLog,
+  UserRole,
 } from '../types';
 import {
   INITIAL_CAFE_SETTINGS,
@@ -34,7 +41,9 @@ import {
   INITIAL_DISCOUNTS,
   INITIAL_PICKUP_SETTINGS,
   INITIAL_ORDERS,
+  INITIAL_KITCHEN_STATIONS,
 } from './mockData';
+import { publishRealtimeEvent } from './realtime';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -69,6 +78,10 @@ const LOCAL_STORAGE_PAYMENTS = 'hangout_payments_store';
 const LOCAL_STORAGE_TRANSACTIONS = 'hangout_transactions_store';
 const LOCAL_STORAGE_STATUS_HISTORY = 'hangout_status_history_store';
 const LOCAL_STORAGE_AUDIT_LOGS = 'hangout_audit_logs_store';
+const LOCAL_STORAGE_TABLES = 'hangout_tables_store';
+const LOCAL_STORAGE_KITCHEN_STATIONS = 'hangout_stations_store';
+const LOCAL_STORAGE_BILL_SPLITS = 'hangout_bill_splits_store';
+const LOCAL_STORAGE_STAFF_AUDIT_LOGS = 'hangout_staff_audit_logs_store';
 
 // Decimal-safe rounding helper
 export function roundMoney(amount: number): number {
@@ -79,9 +92,9 @@ export function roundMoney(amount: number): number {
 function getLocalStore<T>(key: string, defaultValue: T): T {
   try {
     const item = localStorage.getItem(key);
-    return item ? JSON.parse(item) : defaultValue;
+    return item ? JSON.parse(item) : JSON.parse(JSON.stringify(defaultValue));
   } catch {
-    return defaultValue;
+    return JSON.parse(JSON.stringify(defaultValue));
   }
 }
 
@@ -594,7 +607,7 @@ export async function uploadMenuImage(file: File): Promise<{ url: string; error?
 }
 
 // ---------------------------------------------------------------------------
-// 6. Cafe Tables Repository
+// 6. Cafe Tables Repository & Floor Management
 // ---------------------------------------------------------------------------
 export async function fetchCafeTables(): Promise<CafeTable[]> {
   if (isSupabaseConfigured()) {
@@ -605,13 +618,14 @@ export async function fetchCafeTables(): Promise<CafeTable[]> {
         .eq('is_active', true)
         .order('table_number', { ascending: true });
       if (!error && data && data.length > 0) {
+        setLocalStore(LOCAL_STORAGE_TABLES, data);
         return data as CafeTable[];
       }
     } catch (e) {
       console.warn('Supabase fetchCafeTables failed, using fallback:', e);
     }
   }
-  return INITIAL_TABLES;
+  return getLocalStore<CafeTable[]>(LOCAL_STORAGE_TABLES, INITIAL_TABLES);
 }
 
 export async function fetchTableByIdentifier(identifier: string): Promise<CafeTable | null> {
@@ -625,6 +639,131 @@ export async function fetchTableByIdentifier(identifier: string): Promise<CafeTa
         t.table_number.toLowerCase().replace('-', '') === cleanId
     ) || null
   );
+}
+
+export async function updateTableStatus(
+  tableId: string,
+  newStatus: TableStatus,
+  guestCount?: number,
+  waiterId?: string | null,
+  waiterName?: string | null,
+  actorName: string = 'Staff'
+): Promise<CafeTable> {
+  const tables = getLocalStore<CafeTable[]>(LOCAL_STORAGE_TABLES, INITIAL_TABLES);
+  const idx = tables.findIndex((t) => t.id === tableId);
+  if (idx === -1) {
+    throw new Error(`Table ${tableId} not found`);
+  }
+
+  const table = tables[idx];
+  const previousStatus = table.status;
+
+  // Strict Rule: Prevent marking table available while an active unpaid order remains!
+  if (newStatus === 'available') {
+    const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+    const unpaidActiveOrder = orders.find(
+      (o) =>
+        (o.table_id === tableId || o.table_number_snapshot === table.table_number) &&
+        o.payment_status !== 'PAID' &&
+        o.order_status !== 'COMPLETED' &&
+        o.order_status !== 'CANCELLED' &&
+        o.order_status !== 'REJECTED'
+    );
+    if (unpaidActiveOrder) {
+      throw new Error(
+        `Cannot mark table available while an active unpaid order (${unpaidActiveOrder.order_number}) remains. Please settle payment or close the order first.`
+      );
+    }
+  }
+
+  const updated: CafeTable = {
+    ...table,
+    status: newStatus,
+    guest_count: guestCount !== undefined ? guestCount : table.guest_count,
+    assigned_waiter_id: waiterId !== undefined ? waiterId : table.assigned_waiter_id,
+    assigned_waiter_name: waiterName !== undefined ? waiterName : table.assigned_waiter_name,
+    last_activity_at: new Date().toISOString(),
+  };
+
+  if (newStatus === 'available') {
+    updated.guest_count = 0;
+    updated.active_order_id = null;
+    updated.active_order_number = null;
+    updated.current_bill_amount = 0;
+  }
+
+  tables[idx] = updated;
+  setLocalStore(LOCAL_STORAGE_TABLES, tables);
+
+  // Log staff audit
+  await logStaffAction('TABLE', tableId, actorName, 'UPDATE_STATUS', {
+    previousStatus,
+    newStatus,
+    tableNumber: table.table_number,
+    guestCount: updated.guest_count,
+  });
+
+  // Realtime notification
+  publishRealtimeEvent({
+    type: 'TABLE_UPDATED',
+    tableId,
+    tableNumber: table.table_number,
+    status: newStatus,
+    actorName,
+  });
+
+  return updated;
+}
+
+export async function openTable(
+  tableId: string,
+  guestCount: number,
+  waiterId?: string | null,
+  waiterName?: string | null,
+  actorName: string = 'Staff'
+): Promise<CafeTable> {
+  return updateTableStatus(tableId, 'occupied', guestCount, waiterId, waiterName, actorName);
+}
+
+export async function markTableCleaning(tableId: string, actorName: string = 'Staff'): Promise<CafeTable> {
+  return updateTableStatus(tableId, 'cleaning', undefined, undefined, undefined, actorName);
+}
+
+export async function markTableAvailable(tableId: string, actorName: string = 'Staff'): Promise<CafeTable> {
+  return updateTableStatus(tableId, 'available', 0, null, null, actorName);
+}
+
+export async function assignWaiterToTable(
+  tableId: string,
+  waiterId: string,
+  waiterName: string,
+  actorName: string = 'Staff'
+): Promise<CafeTable> {
+  const tables = getLocalStore<CafeTable[]>(LOCAL_STORAGE_TABLES, INITIAL_TABLES);
+  const idx = tables.findIndex((t) => t.id === tableId);
+  if (idx === -1) {
+    throw new Error(`Table ${tableId} not found`);
+  }
+
+  tables[idx].assigned_waiter_id = waiterId;
+  tables[idx].assigned_waiter_name = waiterName;
+  tables[idx].last_activity_at = new Date().toISOString();
+  setLocalStore(LOCAL_STORAGE_TABLES, tables);
+
+  await logStaffAction('TABLE', tableId, actorName, 'ASSIGN_WAITER', {
+    waiterId,
+    waiterName,
+    tableNumber: tables[idx].table_number,
+  });
+
+  publishRealtimeEvent({
+    type: 'TABLE_UPDATED',
+    tableId,
+    tableNumber: tables[idx].table_number,
+    actorName,
+  });
+
+  return tables[idx];
 }
 
 // ---------------------------------------------------------------------------
@@ -1024,9 +1163,11 @@ export async function fetchCustomerOrders(
 export const VALID_ORDER_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   PENDING: ['ACCEPTED', 'REJECTED', 'CANCELLED'],
   ACCEPTED: ['PREPARING', 'CANCELLED'],
-  PREPARING: ['PREPARATION_COMPLETED', 'READY_FOR_PICKUP', 'CANCELLED'],
-  PREPARATION_COMPLETED: ['READY_FOR_PICKUP', 'COMPLETED', 'CANCELLED'],
+  PREPARING: ['PREPARATION_COMPLETED', 'READY_FOR_PICKUP', 'READY_FOR_SERVICE', 'CANCELLED'],
+  PREPARATION_COMPLETED: ['READY_FOR_PICKUP', 'READY_FOR_SERVICE', 'SERVED', 'COMPLETED', 'CANCELLED'],
   READY_FOR_PICKUP: ['COMPLETED', 'CANCELLED'],
+  READY_FOR_SERVICE: ['SERVED', 'COMPLETED', 'CANCELLED'],
+  SERVED: ['COMPLETED', 'CANCELLED'],
   COMPLETED: [],
   REJECTED: [],
   CANCELLED: [],
@@ -1103,6 +1244,10 @@ export async function updateOrderStatus(
 // ---------------------------------------------------------------------------
 // 9. Simulated Payment Gateway & Adapter
 // ---------------------------------------------------------------------------
+export function generateDemoTransactionRef(): string {
+  return `TXN-DEMO-${new Date().getFullYear()}-${Math.floor(Math.random() * 90000 + 10000)}`;
+}
+
 export async function processSimulatedPayment(params: {
   orderId: string;
   amount: number;
@@ -1116,7 +1261,7 @@ export async function processSimulatedPayment(params: {
 }> {
   const timestamp = new Date().toISOString();
   const paymentId = 'pay_' + Date.now().toString(36);
-  const txnRef = `TXN-DEMO-${new Date().getFullYear()}-${Math.floor(Math.random() * 90000 + 10000)}`;
+  const txnRef = generateDemoTransactionRef();
 
   const isSuccess = !params.shouldFail && params.paymentMethod !== 'PAY_AFTER_MEAL';
   const isPayLater = params.paymentMethod === 'PAY_AFTER_MEAL';
@@ -1256,4 +1401,1065 @@ export async function logAdminAction(
 
 export async function fetchAuditLogs(): Promise<AdminAuditLog[]> {
   return getLocalStore<AdminAuditLog[]>(LOCAL_STORAGE_AUDIT_LOGS, []);
+}
+
+// ============================================================================
+// BATCH 03: STAFF ROLES & PERMISSION ENGINE
+// ============================================================================
+
+export type StaffAction =
+  | 'MANAGE_TABLES'
+  | 'APPROVE_ORDERS'
+  | 'CREATE_ORDERS'
+  | 'PREPARE_FOOD'
+  | 'SETTLE_BILLS'
+  | 'MANAGE_SETTINGS'
+  | 'EDIT_MENU';
+
+export function assertStaffPermission(role: UserRole, action: StaffAction): void {
+  const permissions: Record<UserRole, StaffAction[]> = {
+    admin: [
+      'MANAGE_TABLES',
+      'APPROVE_ORDERS',
+      'CREATE_ORDERS',
+      'PREPARE_FOOD',
+      'SETTLE_BILLS',
+      'MANAGE_SETTINGS',
+      'EDIT_MENU',
+    ],
+    manager: [
+      'MANAGE_TABLES',
+      'APPROVE_ORDERS',
+      'CREATE_ORDERS',
+      'PREPARE_FOOD',
+      'SETTLE_BILLS',
+    ],
+    waiter: [
+      'MANAGE_TABLES',
+      'APPROVE_ORDERS',
+      'CREATE_ORDERS',
+      'SETTLE_BILLS',
+    ],
+    kitchen: [
+      'PREPARE_FOOD',
+    ],
+    cashier: [
+      'SETTLE_BILLS',
+      'MANAGE_TABLES',
+    ],
+  };
+
+  const allowed = permissions[role] || [];
+  if (!allowed.includes(action)) {
+    throw new Error(`Unauthorized: Role "${role}" does not have permission to "${action}".`);
+  }
+}
+
+export async function logStaffAction(
+  entityType: 'TABLE' | 'ORDER' | 'ORDER_ITEM' | 'BILL' | 'STATION' | string,
+  entityId: string,
+  staffName: string,
+  action: string,
+  details: Record<string, unknown> = {},
+  role: string = 'STAFF'
+): Promise<void> {
+  const logs = getLocalStore<StaffAuditLog[]>(LOCAL_STORAGE_STAFF_AUDIT_LOGS, []);
+  logs.unshift({
+    id: 'staff_log_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+    staff_name: staffName,
+    role,
+    action,
+    entity_type: entityType,
+    entity_id: entityId,
+    details,
+    created_at: new Date().toISOString(),
+  });
+  setLocalStore(LOCAL_STORAGE_STAFF_AUDIT_LOGS, logs);
+}
+
+export async function fetchStaffAuditLogs(): Promise<StaffAuditLog[]> {
+  return getLocalStore<StaffAuditLog[]>(LOCAL_STORAGE_STAFF_AUDIT_LOGS, []);
+}
+
+// ============================================================================
+// BATCH 03: KITCHEN STATIONS REPOSITORY
+// ============================================================================
+
+export async function fetchKitchenStations(): Promise<KitchenStation[]> {
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('kitchen_stations')
+        .select('*')
+        .eq('is_active', true)
+        .order('display_order', { ascending: true });
+      if (!error && data && data.length > 0) {
+        setLocalStore(LOCAL_STORAGE_KITCHEN_STATIONS, data);
+        return data as KitchenStation[];
+      }
+    } catch (e) {
+      console.warn('Supabase fetchKitchenStations failed, using fallback:', e);
+    }
+  }
+  return getLocalStore<KitchenStation[]>(LOCAL_STORAGE_KITCHEN_STATIONS, INITIAL_KITCHEN_STATIONS);
+}
+
+export async function saveKitchenStation(station: KitchenStation): Promise<KitchenStation> {
+  const stations = getLocalStore<KitchenStation[]>(LOCAL_STORAGE_KITCHEN_STATIONS, INITIAL_KITCHEN_STATIONS);
+  const idx = stations.findIndex((s) => s.id === station.id);
+  if (idx >= 0) {
+    stations[idx] = station;
+  } else {
+    stations.push(station);
+  }
+  setLocalStore(LOCAL_STORAGE_KITCHEN_STATIONS, stations);
+  return station;
+}
+
+// ============================================================================
+// BATCH 03: DINING ORDER APPROVAL ENGINE
+// ============================================================================
+
+export async function approveDiningOrder(
+  orderId: string,
+  waiterId: string,
+  waiterName: string
+): Promise<Order> {
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const idx = orders.findIndex((o) => o.id === orderId);
+  if (idx === -1) throw new Error('Order not found');
+
+  const order = orders[idx];
+  if (order.order_status !== 'PENDING') {
+    throw new Error(`Cannot approve order in status ${order.order_status}`);
+  }
+  if (order.order_type !== 'DINING') {
+    throw new Error('Only dining orders require waiter approval');
+  }
+
+  const now = new Date().toISOString();
+  order.order_status = 'ACCEPTED';
+  order.status = 'ACCEPTED';
+  order.approved_by_waiter_id = waiterId;
+  order.waiter_id = order.waiter_id || waiterId;
+  order.waiter_name = order.waiter_name || waiterName;
+  order.approved_at = now;
+  order.updated_at = now;
+
+  // Initialize items as QUEUED for kitchen
+  if (order.items) {
+    order.items = order.items.map((it) => ({
+      ...it,
+      status: it.status || 'QUEUED',
+      item_status: it.item_status || 'QUEUED',
+    }));
+  }
+
+  orders[idx] = order;
+  setLocalStore(LOCAL_STORAGE_ORDERS, orders);
+
+  // Bind active order to table if table exists
+  if (order.table_id) {
+    const tables = getLocalStore<CafeTable[]>(LOCAL_STORAGE_TABLES, INITIAL_TABLES);
+    const tIdx = tables.findIndex((t) => t.id === order.table_id);
+    if (tIdx >= 0) {
+      tables[tIdx].active_order_id = order.id;
+      tables[tIdx].active_order_number = order.order_number;
+      tables[tIdx].current_bill_amount = order.total_amount;
+      tables[tIdx].status = 'occupied';
+      tables[tIdx].last_activity_at = now;
+      setLocalStore(LOCAL_STORAGE_TABLES, tables);
+    }
+  }
+
+  // Record status history & audit
+  const history = getLocalStore<OrderStatusHistory[]>(LOCAL_STORAGE_STATUS_HISTORY, []);
+  history.push({
+    id: 'osh_' + Date.now().toString(36),
+    order_id: orderId,
+    previous_status: 'PENDING',
+    new_status: 'ACCEPTED',
+    changed_by_role: 'WAITER',
+    changed_by_user_id: waiterId,
+    notes: `Dining order approved by waiter ${waiterName}`,
+    created_at: now,
+  });
+  setLocalStore(LOCAL_STORAGE_STATUS_HISTORY, history);
+
+  await logStaffAction('ORDER', orderId, waiterName, 'APPROVE_DINING_ORDER', {
+    orderNumber: order.order_number,
+    tableId: order.table_id,
+    total: order.total_amount,
+  });
+
+  // Realtime notification: updates KDS immediately
+  publishRealtimeEvent({
+    type: 'ORDER_APPROVED',
+    orderId,
+    tableId: order.table_id || undefined,
+    tableNumber: order.table_number_snapshot || undefined,
+    status: 'ACCEPTED',
+    actorRole: 'WAITER',
+    actorName: waiterName,
+  });
+
+  return order;
+}
+
+export async function rejectDiningOrder(
+  orderId: string,
+  reason: string,
+  waiterId: string,
+  waiterName: string
+): Promise<Order> {
+  if (!reason || !reason.trim()) {
+    throw new Error('Rejection reason is required');
+  }
+
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const idx = orders.findIndex((o) => o.id === orderId);
+  if (idx === -1) throw new Error('Order not found');
+
+  const order = orders[idx];
+  if (order.order_status !== 'PENDING') {
+    throw new Error(`Cannot reject order in status ${order.order_status}`);
+  }
+
+  const now = new Date().toISOString();
+  order.order_status = 'REJECTED';
+  order.status = 'REJECTED';
+  order.rejection_reason = reason.trim();
+  order.updated_at = now;
+
+  // Mark all items cancelled
+  if (order.items) {
+    order.items = order.items.map((it) => ({
+      ...it,
+      status: 'CANCELLED',
+      item_status: 'CANCELLED',
+    }));
+  }
+
+  orders[idx] = order;
+  setLocalStore(LOCAL_STORAGE_ORDERS, orders);
+
+  // If table had this active order, clear it
+  if (order.table_id) {
+    const tables = getLocalStore<CafeTable[]>(LOCAL_STORAGE_TABLES, INITIAL_TABLES);
+    const tIdx = tables.findIndex((t) => t.id === order.table_id);
+    if (tIdx >= 0 && tables[tIdx].active_order_id === order.id) {
+      tables[tIdx].active_order_id = null;
+      tables[tIdx].active_order_number = null;
+      tables[tIdx].current_bill_amount = 0;
+      setLocalStore(LOCAL_STORAGE_TABLES, tables);
+    }
+  }
+
+  const history = getLocalStore<OrderStatusHistory[]>(LOCAL_STORAGE_STATUS_HISTORY, []);
+  history.push({
+    id: 'osh_' + Date.now().toString(36),
+    order_id: orderId,
+    previous_status: 'PENDING',
+    new_status: 'REJECTED',
+    changed_by_role: 'WAITER',
+    changed_by_user_id: waiterId,
+    notes: `Rejected by waiter ${waiterName}: ${reason.trim()}`,
+    created_at: now,
+  });
+  setLocalStore(LOCAL_STORAGE_STATUS_HISTORY, history);
+
+  await logStaffAction('ORDER', orderId, waiterName, 'REJECT_DINING_ORDER', {
+    orderNumber: order.order_number,
+    reason: reason.trim(),
+  });
+
+  publishRealtimeEvent({
+    type: 'ORDER_REJECTED',
+    orderId,
+    status: 'REJECTED',
+    actorRole: 'WAITER',
+    actorName: waiterName,
+  });
+
+  return order;
+}
+
+// ============================================================================
+// BATCH 03: WAITER ORDER CREATION & ADDING ITEMS
+// ============================================================================
+
+export interface CreateWaiterOrderParams {
+  tableId: string;
+  guestCount: number;
+  waiterId: string;
+  waiterName: string;
+  customerName?: string;
+  customerMobile?: string;
+  items: {
+    menuItemId: string;
+    variantName?: string;
+    addonNames?: string[];
+    quantity: number;
+    specialInstructions?: string;
+  }[];
+  notes?: string;
+}
+
+export async function createWaiterOrder(params: CreateWaiterOrderParams): Promise<Order> {
+  const tables = await fetchCafeTables();
+  const table = tables.find((t) => t.id === params.tableId);
+  if (!table) throw new Error(`Table ${params.tableId} not found`);
+
+  const allMenuItems = await fetchMenuItems();
+  const menuMap = new Map(allMenuItems.map((m) => [m.id, m]));
+
+  const orderId = 'ord_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+  const orderNumber = generateDemoOrderNumber();
+  const now = new Date().toISOString();
+
+  let subtotal = 0;
+  const orderItems: OrderItem[] = [];
+
+  for (const rawItem of params.items) {
+    const menuItem = menuMap.get(rawItem.menuItemId);
+    if (!menuItem) {
+      throw new Error(`Menu item ${rawItem.menuItemId} not found`);
+    }
+
+    let unitPrice = menuItem.base_price ?? menuItem.price ?? 0;
+    let variantSnapshot: { name: string; price_delta: number } | null = null;
+
+    if (rawItem.variantName && menuItem.variants) {
+      const foundVar = menuItem.variants.find((v) => v.name === rawItem.variantName);
+      if (foundVar) {
+        unitPrice += foundVar.price_delta;
+        variantSnapshot = { name: foundVar.name, price_delta: foundVar.price_delta };
+      }
+    }
+
+    const addonsSnapshot: { name: string; price: number }[] = [];
+    if (rawItem.addonNames && menuItem.addons) {
+      for (const aName of rawItem.addonNames) {
+        const foundAddon = menuItem.addons.find((a) => a.name === aName);
+        if (foundAddon) {
+          unitPrice += foundAddon.price;
+          addonsSnapshot.push({ name: foundAddon.name, price: foundAddon.price });
+        }
+      }
+    }
+
+    unitPrice = roundMoney(unitPrice);
+    const totalPrice = roundMoney(unitPrice * rawItem.quantity);
+    subtotal = roundMoney(subtotal + totalPrice);
+
+    orderItems.push({
+      id: 'oi_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+      order_id: orderId,
+      menu_item_id: menuItem.id,
+      item_name_snapshot: menuItem.name,
+      is_veg: menuItem.is_veg,
+      unit_price_snapshot: unitPrice,
+      quantity: rawItem.quantity,
+      total_price: totalPrice,
+      variant_snapshot: variantSnapshot,
+      variant_name_snapshot: variantSnapshot?.name || null,
+      addons_snapshot: addonsSnapshot,
+      addon_names_snapshot: addonsSnapshot.map((a) => a.name),
+      special_instructions: rawItem.specialInstructions || '',
+      tax_rate_snapshot: 5.0,
+      status: 'QUEUED',
+      item_status: 'QUEUED',
+      kitchen_station_id: menuItem.kitchen_station_id || 's0000000-0000-0000-0000-000000000001',
+      station_code: menuItem.station_code || 'MAIN_KITCHEN',
+      estimated_prep_mins: menuItem.preparation_time_mins || 15,
+      created_at: now,
+    });
+  }
+
+  const taxConfig = await fetchTaxConfiguration();
+  const taxResult = calculateOrderTaxes(subtotal, 0, taxConfig);
+
+  const newOrder: Order = {
+    id: orderId,
+    order_number: orderNumber,
+    customer_id: null,
+    customer_name_snapshot: params.customerName?.trim() || 'Walk-in Guest',
+    customer_mobile_snapshot: params.customerMobile?.trim() || '0000000000',
+    customer_email_snapshot: null,
+    order_type: 'DINING',
+    table_id: table.id,
+    table_number_snapshot: table.table_number,
+    guest_count: params.guestCount,
+    waiter_id: params.waiterId,
+    waiter_name: params.waiterName,
+    pickup_time_slot: null,
+    pickup_slot_snapshot: null,
+    pickup_notes: null,
+    subtotal,
+    discount_amount: 0,
+    discount_code: null,
+    tax_amount: taxResult.taxAmount,
+    tax_breakdown: taxResult.taxBreakdown,
+    total_amount: taxResult.totalPayable,
+    outstanding_balance: taxResult.totalPayable,
+    payment_method: 'PAY_AFTER_MEAL',
+    payment_status: 'UNPAID',
+    order_status: 'ACCEPTED',
+    status: 'ACCEPTED',
+    special_instructions: params.notes || null,
+    notes: params.notes || null,
+    items: orderItems,
+    created_at: now,
+    updated_at: now,
+  };
+
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  orders.unshift(newOrder);
+  setLocalStore(LOCAL_STORAGE_ORDERS, orders);
+
+  // Update table status
+  await updateTableStatus(
+    table.id,
+    'occupied',
+    params.guestCount,
+    params.waiterId,
+    params.waiterName,
+    params.waiterName
+  );
+
+  // Re-save table with active order
+  const allTables = getLocalStore<CafeTable[]>(LOCAL_STORAGE_TABLES, INITIAL_TABLES);
+  const tIdx = allTables.findIndex((t) => t.id === table.id);
+  if (tIdx >= 0) {
+    allTables[tIdx].active_order_id = newOrder.id;
+    allTables[tIdx].active_order_number = newOrder.order_number;
+    allTables[tIdx].current_bill_amount = newOrder.total_amount;
+    setLocalStore(LOCAL_STORAGE_TABLES, allTables);
+  }
+
+  // Audit
+  await logStaffAction('ORDER', newOrder.id, params.waiterName, 'CREATE_WAITER_ORDER', {
+    orderNumber: newOrder.order_number,
+    table: table.table_number,
+    guestCount: params.guestCount,
+    total: newOrder.total_amount,
+  });
+
+  publishRealtimeEvent({
+    type: 'ORDER_CREATED',
+    orderId: newOrder.id,
+    tableId: table.id,
+    tableNumber: table.table_number,
+    status: 'ACCEPTED',
+    actorRole: 'WAITER',
+    actorName: params.waiterName,
+  });
+
+  return newOrder;
+}
+
+export async function addItemsToExistingOrder(
+  orderId: string,
+  newItems: {
+    menuItemId: string;
+    variantName?: string;
+    addonNames?: string[];
+    quantity: number;
+    specialInstructions?: string;
+  }[],
+  actorName: string = 'Staff'
+): Promise<Order> {
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const idx = orders.findIndex((o) => o.id === orderId);
+  if (idx === -1) throw new Error('Order not found');
+
+  const order = orders[idx];
+  if (order.order_status === 'COMPLETED' || order.order_status === 'CANCELLED' || order.order_status === 'REJECTED') {
+    throw new Error(`Cannot add items to order in status ${order.order_status}`);
+  }
+
+  const allMenuItems = await fetchMenuItems();
+  const menuMap = new Map(allMenuItems.map((m) => [m.id, m]));
+  const now = new Date().toISOString();
+
+  let addedSubtotal = 0;
+  const addedItems: OrderItem[] = [];
+
+  for (const rawItem of newItems) {
+    const menuItem = menuMap.get(rawItem.menuItemId);
+    if (!menuItem) continue;
+
+    let unitPrice = menuItem.base_price ?? menuItem.price ?? 0;
+    let variantSnapshot: { name: string; price_delta: number } | null = null;
+
+    if (rawItem.variantName && menuItem.variants) {
+      const foundVar = menuItem.variants.find((v) => v.name === rawItem.variantName);
+      if (foundVar) {
+        unitPrice += foundVar.price_delta;
+        variantSnapshot = { name: foundVar.name, price_delta: foundVar.price_delta };
+      }
+    }
+
+    const addonsSnapshot: { name: string; price: number }[] = [];
+    if (rawItem.addonNames && menuItem.addons) {
+      for (const aName of rawItem.addonNames) {
+        const foundAddon = menuItem.addons.find((a) => a.name === aName);
+        if (foundAddon) {
+          unitPrice += foundAddon.price;
+          addonsSnapshot.push({ name: foundAddon.name, price: foundAddon.price });
+        }
+      }
+    }
+
+    unitPrice = roundMoney(unitPrice);
+    const totalPrice = roundMoney(unitPrice * rawItem.quantity);
+    addedSubtotal = roundMoney(addedSubtotal + totalPrice);
+
+    addedItems.push({
+      id: 'oi_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+      order_id: order.id,
+      menu_item_id: menuItem.id,
+      item_name_snapshot: menuItem.name,
+      is_veg: menuItem.is_veg,
+      unit_price_snapshot: unitPrice,
+      quantity: rawItem.quantity,
+      total_price: totalPrice,
+      variant_snapshot: variantSnapshot,
+      variant_name_snapshot: variantSnapshot?.name || null,
+      addons_snapshot: addonsSnapshot,
+      addon_names_snapshot: addonsSnapshot.map((a) => a.name),
+      special_instructions: rawItem.specialInstructions || '',
+      tax_rate_snapshot: 5.0,
+      status: 'QUEUED',
+      item_status: 'QUEUED',
+      kitchen_station_id: menuItem.kitchen_station_id || 's0000000-0000-0000-0000-000000000001',
+      station_code: menuItem.station_code || 'MAIN_KITCHEN',
+      estimated_prep_mins: menuItem.preparation_time_mins || 15,
+      created_at: now,
+    });
+  }
+
+  order.items = [...(order.items || []), ...addedItems];
+  order.subtotal = roundMoney(order.subtotal + addedSubtotal);
+
+  const taxConfig = await fetchTaxConfiguration();
+  const taxResult = calculateOrderTaxes(order.subtotal, order.discount_amount, taxConfig);
+  order.tax_amount = taxResult.taxAmount;
+  order.tax_breakdown = taxResult.taxBreakdown;
+  order.total_amount = taxResult.totalPayable;
+  order.outstanding_balance = roundMoney(order.total_amount - (order.payment_status === 'PAID' ? order.total_amount : 0));
+  order.updated_at = now;
+
+  orders[idx] = order;
+  setLocalStore(LOCAL_STORAGE_ORDERS, orders);
+
+  // Update table bill
+  if (order.table_id) {
+    const tables = getLocalStore<CafeTable[]>(LOCAL_STORAGE_TABLES, INITIAL_TABLES);
+    const tIdx = tables.findIndex((t) => t.id === order.table_id);
+    if (tIdx >= 0) {
+      tables[tIdx].current_bill_amount = order.total_amount;
+      setLocalStore(LOCAL_STORAGE_TABLES, tables);
+    }
+  }
+
+  await logStaffAction('ORDER', order.id, actorName, 'ADD_ITEMS_TO_ORDER', {
+    addedItemsCount: addedItems.length,
+    newTotal: order.total_amount,
+  });
+
+  publishRealtimeEvent({
+    type: 'ORDER_ITEMS_ADDED',
+    orderId: order.id,
+    tableId: order.table_id || undefined,
+    status: order.order_status,
+    actorName,
+  });
+
+  return order;
+}
+
+// ============================================================================
+// BATCH 03: ITEM-LEVEL PREPARATION & KDS TIMERS
+// ============================================================================
+
+export const VALID_ITEM_TRANSITIONS: Record<OrderItemStatus, OrderItemStatus[]> = {
+  QUEUED: ['PREPARING', 'CANCELLED'],
+  PREPARING: ['PREPARATION_COMPLETED', 'READY', 'CANCELLED'],
+  PREPARATION_COMPLETED: ['READY', 'SERVED', 'CANCELLED'],
+  READY: ['SERVED', 'CANCELLED'],
+  SERVED: [],
+  CANCELLED: [],
+};
+
+export async function updateOrderItemStatus(
+  orderId: string,
+  itemId: string,
+  newStatus: OrderItemStatus,
+  staffName: string = 'Chef'
+): Promise<Order> {
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const orderIdx = orders.findIndex((o) => o.id === orderId);
+  if (orderIdx === -1) throw new Error('Order not found');
+
+  const order = orders[orderIdx];
+  const item = order.items?.find((i) => i.id === itemId);
+  if (!item) throw new Error('Order item not found');
+
+  const currentItemStatus = item.item_status || item.status || 'QUEUED';
+  const allowed = VALID_ITEM_TRANSITIONS[currentItemStatus] || [];
+  if (!allowed.includes(newStatus)) {
+    throw new Error(`Cannot transition item status from ${currentItemStatus} to ${newStatus}`);
+  }
+
+  const now = new Date().toISOString();
+  item.item_status = newStatus;
+  item.status = newStatus;
+
+  if (newStatus === 'PREPARING' && !item.preparation_started_at) {
+    item.preparation_started_at = now;
+  } else if (newStatus === 'PREPARATION_COMPLETED') {
+    item.preparation_completed_at = now;
+  } else if (newStatus === 'READY') {
+    item.ready_at = now;
+  } else if (newStatus === 'SERVED') {
+    item.served_at = now;
+  }
+
+  // Parent Order Status Aggregation
+  const activeItems = (order.items || []).filter((i) => (i.item_status || i.status) !== 'CANCELLED');
+  if (activeItems.length > 0) {
+    const allServed = activeItems.every((i) => (i.item_status || i.status) === 'SERVED');
+    const allReadyOrServed = activeItems.every((i) => ['READY', 'SERVED'].includes(i.item_status || i.status || ''));
+    const allPrepCompleted = activeItems.every((i) => ['PREPARATION_COMPLETED', 'READY', 'SERVED'].includes(i.item_status || i.status || ''));
+    const anyPreparing = activeItems.some((i) => (i.item_status || i.status) === 'PREPARING');
+
+    if (allServed && order.order_type === 'DINING') {
+      order.order_status = 'SERVED';
+      order.status = 'SERVED';
+      order.served_at = now;
+    } else if (allReadyOrServed) {
+      if (order.order_type === 'DINING') {
+        order.order_status = 'READY_FOR_SERVICE';
+        order.status = 'READY_FOR_SERVICE';
+      } else {
+        order.order_status = 'READY_FOR_PICKUP';
+        order.status = 'READY_FOR_PICKUP';
+      }
+      order.ready_at = now;
+    } else if (allPrepCompleted && order.order_status === 'PREPARING') {
+      order.order_status = 'PREPARATION_COMPLETED';
+      order.status = 'PREPARATION_COMPLETED';
+    } else if (anyPreparing && order.order_status === 'ACCEPTED') {
+      order.order_status = 'PREPARING';
+      order.status = 'PREPARING';
+      order.preparation_started_at = now;
+    }
+  }
+
+  order.updated_at = now;
+  orders[orderIdx] = order;
+  setLocalStore(LOCAL_STORAGE_ORDERS, orders);
+
+  await logStaffAction('ORDER_ITEM', itemId, staffName, 'UPDATE_ITEM_STATUS', {
+    orderId,
+    orderNumber: order.order_number,
+    newStatus,
+    parentOrderStatus: order.order_status,
+  });
+
+  publishRealtimeEvent({
+    type: 'ITEM_STATUS_CHANGED',
+    orderId,
+    itemId,
+    status: newStatus,
+    actorName: staffName,
+  });
+
+  return order;
+}
+
+export async function startTicketPreparation(orderId: string, staffName: string = 'Chef'): Promise<Order> {
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const idx = orders.findIndex((o) => o.id === orderId);
+  if (idx === -1) throw new Error('Order not found');
+
+  const order = orders[idx];
+  const now = new Date().toISOString();
+
+  if (order.items) {
+    order.items = order.items.map((it) => {
+      if ((it.item_status || it.status) === 'QUEUED') {
+        return {
+          ...it,
+          status: 'PREPARING',
+          item_status: 'PREPARING',
+          preparation_started_at: it.preparation_started_at || now,
+        };
+      }
+      return it;
+    });
+  }
+
+  order.order_status = 'PREPARING';
+  order.status = 'PREPARING';
+  order.preparation_started_at = order.preparation_started_at || now;
+  order.updated_at = now;
+
+  orders[idx] = order;
+  setLocalStore(LOCAL_STORAGE_ORDERS, orders);
+
+  publishRealtimeEvent({
+    type: 'ORDER_STATUS_CHANGED',
+    orderId,
+    status: 'PREPARING',
+    actorName: staffName,
+  });
+
+  return order;
+}
+
+export async function markTicketAllReady(orderId: string, staffName: string = 'Chef'): Promise<Order> {
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const idx = orders.findIndex((o) => o.id === orderId);
+  if (idx === -1) throw new Error('Order not found');
+
+  const order = orders[idx];
+  const now = new Date().toISOString();
+
+  if (order.items) {
+    order.items = order.items.map((it) => {
+      if ((it.item_status || it.status) !== 'CANCELLED' && (it.item_status || it.status) !== 'SERVED') {
+        return {
+          ...it,
+          status: 'READY',
+          item_status: 'READY',
+          ready_at: now,
+        };
+      }
+      return it;
+    });
+  }
+
+  const newStatus = order.order_type === 'DINING' ? 'READY_FOR_SERVICE' : 'READY_FOR_PICKUP';
+  order.order_status = newStatus;
+  order.status = newStatus;
+  order.ready_at = now;
+  order.updated_at = now;
+
+  orders[idx] = order;
+  setLocalStore(LOCAL_STORAGE_ORDERS, orders);
+
+  publishRealtimeEvent({
+    type: 'ORDER_STATUS_CHANGED',
+    orderId,
+    status: newStatus,
+    actorName: staffName,
+  });
+
+  return order;
+}
+
+export async function markOrderServed(orderId: string, staffName: string = 'Waiter'): Promise<Order> {
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const idx = orders.findIndex((o) => o.id === orderId);
+  if (idx === -1) throw new Error('Order not found');
+
+  const order = orders[idx];
+  const now = new Date().toISOString();
+
+  if (order.items) {
+    order.items = order.items.map((it) => {
+      if ((it.item_status || it.status) !== 'CANCELLED') {
+        return {
+          ...it,
+          status: 'SERVED',
+          item_status: 'SERVED',
+          served_at: now,
+        };
+      }
+      return it;
+    });
+  }
+
+  order.order_status = 'SERVED';
+  order.status = 'SERVED';
+  order.served_at = now;
+  order.updated_at = now;
+
+  orders[idx] = order;
+  setLocalStore(LOCAL_STORAGE_ORDERS, orders);
+
+  publishRealtimeEvent({
+    type: 'ORDER_STATUS_CHANGED',
+    orderId,
+    status: 'SERVED',
+    actorName: staffName,
+  });
+
+  return order;
+}
+
+// ============================================================================
+// BATCH 03: BILL SPLITTING & SETTLEMENT ENGINE
+// ============================================================================
+
+export async function fetchBillSplits(orderId: string): Promise<BillSplit[]> {
+  const allSplits = getLocalStore<BillSplit[]>(LOCAL_STORAGE_BILL_SPLITS, []);
+  return allSplits.filter((s) => s.order_id === orderId);
+}
+
+export async function createBillSplits(
+  orderId: string,
+  splitType: BillSplitType,
+  options: {
+    splitCount?: number;
+    customAmounts?: number[];
+    itemAssignments?: Record<number, string[]>;
+  }
+): Promise<BillSplit[]> {
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const orderIdx = orders.findIndex((o) => o.id === orderId);
+  if (orderIdx === -1) throw new Error('Order not found');
+
+  const order = orders[orderIdx];
+  const total = order.total_amount;
+  const splits: BillSplit[] = [];
+  const now = new Date().toISOString();
+
+  if (splitType === 'EQUAL') {
+    const N = Math.max(2, options.splitCount || 2);
+    const totalPaise = Math.round(total * 100);
+    const basePaise = Math.floor(totalPaise / N);
+    const remainderPaise = totalPaise % N;
+
+    for (let i = 1; i <= N; i++) {
+      const splitPaise = basePaise + (i <= remainderPaise ? 1 : 0);
+      splits.push({
+        id: 'split_' + Date.now().toString(36) + '_' + i,
+        order_id: orderId,
+        split_index: i,
+        label: `Guest ${i}`,
+        split_type: 'EQUAL',
+        amount: roundMoney(splitPaise / 100),
+        payment_status: 'UNPAID',
+        payment_method: null,
+        transaction_reference: null,
+        paid_at: null,
+        created_at: now,
+      });
+    }
+  } else if (splitType === 'CUSTOM') {
+    const amounts = options.customAmounts || [];
+    if (amounts.length < 2) {
+      throw new Error('Custom split requires at least 2 guest amounts');
+    }
+    const sum = roundMoney(amounts.reduce((a, b) => a + b, 0));
+    if (Math.abs(sum - total) > 0.05) {
+      throw new Error(
+        `Sum of split amounts (₹${sum.toFixed(2)}) does not match total payable bill (₹${total.toFixed(2)}). Difference: ₹${roundMoney(total - sum).toFixed(2)}`
+      );
+    }
+
+    amounts.forEach((amt, idx) => {
+      splits.push({
+        id: 'split_' + Date.now().toString(36) + '_' + (idx + 1),
+        order_id: orderId,
+        split_index: idx + 1,
+        label: `Guest ${idx + 1}`,
+        split_type: 'CUSTOM',
+        amount: roundMoney(amt),
+        payment_status: 'UNPAID',
+        payment_method: null,
+        transaction_reference: null,
+        paid_at: null,
+        created_at: now,
+      });
+    });
+  } else if (splitType === 'ITEMS') {
+    const assignments = options.itemAssignments || {};
+    const splitIndices = Object.keys(assignments).map(Number).sort((a, b) => a - b);
+    if (splitIndices.length < 2) {
+      throw new Error('Item split requires assignments for at least 2 guests');
+    }
+
+    const items = order.items || [];
+    const itemMap = new Map(items.map((i) => [i.id, i]));
+    const effectiveTaxRate = order.subtotal > 0 ? order.tax_amount / order.subtotal : 0.05;
+
+    let runningTotal = 0;
+    splitIndices.forEach((idx, arrIdx) => {
+      const itemIds = assignments[idx] || [];
+      const guestSubtotal = itemIds.reduce((sum, id) => {
+        const it = itemMap.get(id);
+        return sum + (it ? it.total_price : 0);
+      }, 0);
+
+      let guestAmount = roundMoney(guestSubtotal * (1 + effectiveTaxRate));
+
+      if (arrIdx === splitIndices.length - 1) {
+        guestAmount = roundMoney(total - runningTotal);
+      } else {
+        runningTotal = roundMoney(runningTotal + guestAmount);
+      }
+
+      splits.push({
+        id: 'split_' + Date.now().toString(36) + '_' + idx,
+        order_id: orderId,
+        split_index: idx,
+        label: `Guest ${idx}`,
+        split_type: 'ITEMS',
+        amount: Math.max(0, guestAmount),
+        item_ids: itemIds,
+        payment_status: 'UNPAID',
+        payment_method: null,
+        transaction_reference: null,
+        paid_at: null,
+        created_at: now,
+      });
+    });
+  }
+
+  const allSplits = getLocalStore<BillSplit[]>(LOCAL_STORAGE_BILL_SPLITS, []);
+  const otherSplits = allSplits.filter((s) => s.order_id !== orderId);
+  setLocalStore(LOCAL_STORAGE_BILL_SPLITS, [...otherSplits, ...splits]);
+
+  order.is_split_bill = true;
+  order.split_count = splits.length;
+  order.outstanding_balance = order.total_amount;
+  order.bill_splits = splits;
+  orders[orderIdx] = order;
+  setLocalStore(LOCAL_STORAGE_ORDERS, orders);
+
+  publishRealtimeEvent({
+    type: 'BILL_SPLIT_UPDATED',
+    orderId,
+  });
+
+  return splits;
+}
+
+export async function settleBillSplit(
+  splitId: string,
+  paymentMethod: PaymentMethod,
+  actorName: string = 'Staff'
+): Promise<{ split: BillSplit; order: Order }> {
+  const allSplits = getLocalStore<BillSplit[]>(LOCAL_STORAGE_BILL_SPLITS, []);
+  const splitIdx = allSplits.findIndex((s) => s.id === splitId);
+  if (splitIdx === -1) throw new Error('Bill split record not found');
+
+  const split = allSplits[splitIdx];
+  if (split.payment_status === 'PAID') {
+    throw new Error('This split bill has already been settled');
+  }
+
+  const txnRef = generateDemoTransactionRef();
+  const now = new Date().toISOString();
+
+  split.payment_status = 'PAID';
+  split.payment_method = paymentMethod;
+  split.transaction_reference = txnRef;
+  split.paid_at = now;
+
+  allSplits[splitIdx] = split;
+  setLocalStore(LOCAL_STORAGE_BILL_SPLITS, allSplits);
+
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const orderIdx = orders.findIndex((o) => o.id === split.order_id);
+  if (orderIdx === -1) throw new Error('Parent order not found');
+
+  const order = orders[orderIdx];
+  const orderSplits = allSplits.filter((s) => s.order_id === order.id);
+  const paidAmount = roundMoney(
+    orderSplits.filter((s) => s.payment_status === 'PAID').reduce((sum, s) => sum + s.amount, 0)
+  );
+  const remaining = roundMoney(Math.max(0, order.total_amount - paidAmount));
+  order.outstanding_balance = remaining;
+  order.bill_splits = orderSplits;
+
+  if (remaining === 0) {
+    order.payment_status = 'PAID';
+  }
+
+  orders[orderIdx] = order;
+  setLocalStore(LOCAL_STORAGE_ORDERS, orders);
+
+  const txns = getLocalStore<PaymentTransaction[]>(LOCAL_STORAGE_TRANSACTIONS, []);
+  txns.push({
+    id: 'txn_' + Date.now().toString(36),
+    payment_id: split.id,
+    transaction_reference: txnRef,
+    transaction_number: txnRef,
+    gateway_provider: 'SIMULATED_SPLIT_GATEWAY',
+    status: 'SUCCESS',
+    amount: split.amount,
+    gateway_response: { method: paymentMethod, is_demo: true, split_index: split.split_index },
+    created_at: now,
+  });
+  setLocalStore(LOCAL_STORAGE_TRANSACTIONS, txns);
+
+  await logStaffAction('BILL', split.id, actorName, 'SETTLE_BILL_SPLIT', {
+    orderNumber: order.order_number,
+    splitIndex: split.split_index,
+    amount: split.amount,
+    paymentMethod,
+    remainingBalance: remaining,
+  });
+
+  publishRealtimeEvent({
+    type: 'BILL_SPLIT_PAID',
+    splitId: split.id,
+    orderId: order.id,
+    actorName,
+  });
+
+  return { split, order };
+}
+
+export async function closeCompletedOrder(orderId: string, actorName: string = 'Staff'): Promise<Order> {
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const idx = orders.findIndex((o) => o.id === orderId);
+  if (idx === -1) throw new Error('Order not found');
+
+  const order = orders[idx];
+  if (order.payment_status !== 'PAID') {
+    throw new Error(
+      `Cannot close order: Bill has outstanding unpaid balance of ₹${(order.outstanding_balance ?? order.total_amount).toFixed(2)}`
+    );
+  }
+
+  const now = new Date().toISOString();
+  order.order_status = 'COMPLETED';
+  order.status = 'COMPLETED';
+  order.updated_at = now;
+
+  orders[idx] = order;
+  setLocalStore(LOCAL_STORAGE_ORDERS, orders);
+
+  if (order.table_id) {
+    const tables = getLocalStore<CafeTable[]>(LOCAL_STORAGE_TABLES, INITIAL_TABLES);
+    const tIdx = tables.findIndex((t) => t.id === order.table_id);
+    if (tIdx >= 0) {
+      tables[tIdx].status = 'cleaning';
+      tables[tIdx].active_order_id = null;
+      tables[tIdx].active_order_number = null;
+      tables[tIdx].current_bill_amount = 0;
+      tables[tIdx].last_activity_at = now;
+      setLocalStore(LOCAL_STORAGE_TABLES, tables);
+    }
+  }
+
+  await logStaffAction('ORDER', order.id, actorName, 'CLOSE_ORDER', {
+    orderNumber: order.order_number,
+    total: order.total_amount,
+  });
+
+  publishRealtimeEvent({
+    type: 'ORDER_STATUS_CHANGED',
+    orderId,
+    status: 'COMPLETED',
+    actorName,
+  });
+
+  return order;
 }

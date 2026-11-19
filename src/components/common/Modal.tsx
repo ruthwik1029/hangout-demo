@@ -9,6 +9,7 @@ export interface ModalProps {
   subtitle?: string;
   children: React.ReactNode;
   maxWidth?: 'sm' | 'md' | 'lg' | 'xl' | '2xl';
+  size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl';
   showCloseButton?: boolean;
 }
 
@@ -18,9 +19,11 @@ export const Modal: React.FC<ModalProps> = ({
   title,
   subtitle,
   children,
-  maxWidth = 'md',
+  maxWidth,
+  size,
   showCloseButton = true,
 }) => {
+  const effectiveMaxWidth = size || maxWidth || 'md';
   // Close on Escape key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -63,7 +66,7 @@ export const Modal: React.FC<ModalProps> = ({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 16 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            className={`relative w-full ${maxWidthClasses[maxWidth]} bg-brand-warm-white rounded-3xl shadow-dark-float border border-brand-charcoal/10 overflow-hidden z-10 my-auto`}
+            className={`relative w-full ${maxWidthClasses[effectiveMaxWidth]} bg-brand-warm-white rounded-3xl shadow-dark-float border border-brand-charcoal/10 overflow-hidden z-10 my-auto`}
           >
             {(title || showCloseButton) && (
               <div className="flex items-start justify-between p-6 pb-4 border-b border-brand-border bg-white">

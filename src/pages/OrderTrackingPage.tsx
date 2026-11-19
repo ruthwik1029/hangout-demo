@@ -131,6 +131,8 @@ export const OrderTrackingPage: React.FC = () => {
     PREPARING: 2,
     PREPARATION_COMPLETED: 3,
     READY_FOR_PICKUP: 3,
+    READY_FOR_SERVICE: 3,
+    SERVED: 3.5,
     COMPLETED: 4,
     REJECTED: -1,
     CANCELLED: -1,

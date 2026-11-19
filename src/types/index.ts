@@ -11,6 +11,8 @@ export type OrderStatus =
   | 'PREPARING'
   | 'PREPARATION_COMPLETED'
   | 'READY_FOR_PICKUP'
+  | 'READY_FOR_SERVICE'
+  | 'SERVED'
   | 'COMPLETED'
   | 'CANCELLED';
 
@@ -64,7 +66,7 @@ export interface CafeSettings {
   takeaway_notice: string;
 }
 
-export type TableStatus = 'available' | 'occupied' | 'reserved';
+export type TableStatus = 'available' | 'occupied' | 'reserved' | 'cleaning';
 
 export interface CafeTable {
   id: string;
@@ -75,6 +77,13 @@ export interface CafeTable {
   section: string;
   status: TableStatus;
   is_active: boolean;
+  guest_count?: number;
+  assigned_waiter_id?: string | null;
+  assigned_waiter_name?: string | null;
+  active_order_id?: string | null;
+  active_order_number?: string | null;
+  current_bill_amount?: number;
+  last_activity_at?: string;
 }
 
 export interface MenuCategory {
@@ -132,6 +141,8 @@ export interface MenuItem {
   addons?: MenuItemAddon[];
   tax_category_id?: string;
   is_archived?: boolean;
+  kitchen_station_id?: string;
+  station_code?: string;
 }
 
 export interface CartItem {
@@ -146,7 +157,7 @@ export interface CartItem {
   orderMode: OrderMode;
 }
 
-export type UserRole = 'admin' | 'manager' | 'waiter' | 'kitchen';
+export type UserRole = 'admin' | 'manager' | 'waiter' | 'kitchen' | 'cashier';
 
 export interface UserProfile {
   id: string;
@@ -214,6 +225,14 @@ export interface Discount {
   valid_until?: string;
 }
 
+export type OrderItemStatus =
+  | 'QUEUED'
+  | 'PREPARING'
+  | 'PREPARATION_COMPLETED'
+  | 'READY'
+  | 'SERVED'
+  | 'CANCELLED';
+
 export interface OrderItem {
   id: string;
   order_id: string;
@@ -235,6 +254,15 @@ export interface OrderItem {
   addon_names_snapshot?: string[];
   special_instructions?: string;
   tax_rate_snapshot: number;
+  status?: OrderItemStatus;
+  item_status?: OrderItemStatus;
+  kitchen_station_id?: string;
+  station_code?: string;
+  preparation_started_at?: string | null;
+  preparation_completed_at?: string | null;
+  ready_at?: string | null;
+  served_at?: string | null;
+  estimated_prep_mins?: number;
   created_at?: string;
 }
 
@@ -266,6 +294,18 @@ export interface Order {
   special_instructions?: string | null;
   notes?: string | null;
   items?: OrderItem[];
+  waiter_id?: string | null;
+  waiter_name?: string | null;
+  guest_count?: number | null;
+  approved_by_waiter_id?: string | null;
+  approved_at?: string | null;
+  preparation_started_at?: string | null;
+  ready_at?: string | null;
+  served_at?: string | null;
+  is_split_bill?: boolean;
+  split_count?: number;
+  outstanding_balance?: number;
+  bill_splits?: BillSplit[];
   created_at: string;
   updated_at: string;
 }
@@ -328,3 +368,48 @@ export interface PickupSettings {
   minimum_order_amount: number;
   pickup_policy_notice: string;
 }
+
+// ============================================================================
+// BATCH 03: STAFF OPERATIONS, KITCHEN DISPLAY (KDS) & BILL SPLITTING
+// ============================================================================
+
+export type KitchenStationCode = 'MAIN_KITCHEN' | 'BEVERAGE' | 'BAKERY' | 'DESSERT' | string;
+
+export interface KitchenStation {
+  id: string;
+  name: string;
+  code: KitchenStationCode;
+  description?: string;
+  display_order: number;
+  is_active: boolean;
+}
+
+export type BillSplitType = 'EQUAL' | 'ITEMS' | 'CUSTOM';
+
+export interface BillSplit {
+  id: string;
+  order_id: string;
+  split_index: number;
+  label: string;
+  split_type: BillSplitType;
+  amount: number;
+  item_ids?: string[];
+  payment_status: 'UNPAID' | 'PAID';
+  payment_method?: PaymentMethod | null;
+  transaction_reference?: string | null;
+  paid_at?: string | null;
+  created_at: string;
+}
+
+export interface StaffAuditLog {
+  id: string;
+  staff_id?: string | null;
+  staff_name: string;
+  role: string;
+  action: string;
+  entity_type: 'TABLE' | 'ORDER' | 'ORDER_ITEM' | 'BILL' | 'STATION' | string;
+  entity_id: string;
+  details?: Record<string, unknown>;
+  created_at: string;
+}
+

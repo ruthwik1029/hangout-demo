@@ -379,3 +379,4 @@ INSERT INTO public.pickup_settings (
     0.00,
     'Pickup only. HANGOUT does not provide home delivery. You can collect your order yourself, send someone to collect it, or arrange a Rapido ride from your end.'
 ) ON CONFLICT (id) DO NOTHING;
+

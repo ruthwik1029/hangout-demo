@@ -101,13 +101,13 @@ describe('Route Verification and Rendering', () => {
 
   it('renders Staff Portal Foundation with table layout', () => {
     renderWithProviders('/staff', <StaffPortal />);
-    expect(screen.getByText(/Floor & Waiter Service Station/i)).toBeInTheDocument();
-    expect(screen.getByText(/Cafe Tables & QR Code Floor Map/i)).toBeInTheDocument();
+    expect(screen.getByText(/Floor & Waiter Operations/i)).toBeInTheDocument();
+    expect(screen.getByText(/Table & Floor Map/i)).toBeInTheDocument();
   });
 
   it('renders Kitchen Display System (KDS) Portal Foundation', () => {
     renderWithProviders('/kitchen', <KitchenPortal />);
     expect(screen.getByText(/Live Cooking Queue/i)).toBeInTheDocument();
-    expect(screen.getByText(/#HG-8041/i)).toBeInTheDocument();
+    expect(screen.getByText(/Kitchen Display System \(KDS\)/i)).toBeInTheDocument();
   });
 });

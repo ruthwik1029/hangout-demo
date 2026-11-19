@@ -1,183 +1,232 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { Button } from '../../components/common/Button';
+import { useToast } from '../../context/ToastContext';
+import { KDSNav } from '../../components/kitchen/KDSNav';
+import { KDSTicketCard } from '../../components/kitchen/KDSTicketCard';
 import {
-  Flame,
-  Clock,
-  CheckCircle2,
-  ArrowLeft,
-  Utensils,
-  ShoppingBag,
-} from 'lucide-react';
-
-interface MockTicket {
-  id: string;
-  orderNumber: string;
-  mode: 'dining' | 'takeaway';
-  tableOrPickup: string;
-  timeElapsed: string;
-  items: { name: string; qty: number; notes?: string }[];
-  status: 'cooking' | 'ready' | 'queued';
-}
-
-const MOCK_TICKETS: MockTicket[] = [
-  {
-    id: 't-101',
-    orderNumber: '#HG-8041',
-    mode: 'dining',
-    tableOrPickup: 'Table T-02 (Main Indoor)',
-    timeElapsed: '6m ago',
-    status: 'cooking',
-    items: [
-      { name: 'The Hangout Signature Smash Burger', qty: 2, notes: 'Extra crispy edge' },
-      { name: 'Iced Spanish Latte', qty: 1, notes: 'Large (400ml)' },
-    ],
-  },
-  {
-    id: 't-102',
-    orderNumber: '#HG-8042',
-    mode: 'takeaway',
-    tableOrPickup: 'Counter Self-Pickup',
-    timeElapsed: '3m ago',
-    status: 'cooking',
-    items: [
-      { name: 'Ceremonial Uji Iced Matcha Latte', qty: 1, notes: 'Organic Oat Milk' },
-      { name: 'Truffle Mushroom & Whipped Ricotta Toast', qty: 1 },
-    ],
-  },
-  {
-    id: 't-103',
-    orderNumber: '#HG-8040',
-    mode: 'dining',
-    tableOrPickup: 'Table T-04 (Sunny Patio)',
-    timeElapsed: '14m ago',
-    status: 'ready',
-    items: [
-      { name: 'Wild Forest Truffle Tagliatelle', qty: 1, notes: 'Italian Burrata top' },
-      { name: 'San Sebastian Basque Burnt Cheesecake', qty: 1 },
-    ],
-  },
-];
+  fetchOrders,
+  fetchKitchenStations,
+  updateOrderItemStatus,
+  startTicketPreparation,
+  markTicketAllReady,
+  updateOrderStatus,
+} from '../../lib/supabase';
+import { useRealtimeOperationalSync } from '../../lib/realtime';
+import { Order, KitchenStation, OrderItemStatus } from '../../types';
+import { CheckCircle2 } from 'lucide-react';
 
 export const KitchenPortal: React.FC = () => {
   const { currentUser } = useAuth();
+  const { showToast } = useToast();
+
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [stations, setStations] = useState<KitchenStation[]>([]);
+
+  // Filters
+  const [selectedStation, setSelectedStation] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<'active' | 'preparing' | 'ready' | 'completed' | 'all'>('active');
+  const [modeFilter, setModeFilter] = useState<'all' | 'dining' | 'takeaway'>('all');
+
+  // Load KDS data
+  const loadKDSData = useCallback(async () => {
+    try {
+      const [allOrders, allStations] = await Promise.all([
+        fetchOrders(),
+        fetchKitchenStations(),
+      ]);
+      setOrders(allOrders);
+      setStations(allStations);
+    } catch (err) {
+      console.error('KDS data load failed:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadKDSData();
+  }, [loadKDSData]);
+
+  // Hook into Realtime operational synchronization
+  useRealtimeOperationalSync(
+    useCallback(() => {
+      loadKDSData();
+    }, [loadKDSData])
+  );
+
+  // Active tickets visible in kitchen:
+  // Must NOT include PENDING (awaiting waiter approval for dining) or REJECTED or CANCELLED!
+  const kitchenEligibleOrders = useMemo(() => {
+    return orders.filter((o) => {
+      // PENDING dining orders are waiting for waiter approval, do NOT reach kitchen yet!
+      if (o.order_type === 'DINING' && o.order_status === 'PENDING') return false;
+      if (o.order_status === 'REJECTED' || o.order_status === 'CANCELLED') return false;
+      return true;
+    });
+  }, [orders]);
+
+  // Filter by Station & Multi-station routing
+  const stationFilteredOrders = useMemo(() => {
+    if (selectedStation === 'all') return kitchenEligibleOrders;
+    return kitchenEligibleOrders.filter((order) => {
+      return (order.items || []).some(
+        (it) => (it.station_code || 'MAIN_KITCHEN') === selectedStation
+      );
+    });
+  }, [kitchenEligibleOrders, selectedStation]);
+
+  // Filter by Status & Mode
+  const displayedOrders = useMemo(() => {
+    return stationFilteredOrders.filter((order) => {
+      // Mode filter
+      if (modeFilter === 'dining' && order.order_type !== 'DINING') return false;
+      if (modeFilter === 'takeaway' && order.order_type !== 'TAKEAWAY') return false;
+
+      // Status filter
+      if (statusFilter === 'active') {
+        return ['ACCEPTED', 'PREPARING', 'PREPARATION_COMPLETED', 'READY_FOR_PICKUP', 'READY_FOR_SERVICE'].includes(
+          order.order_status
+        );
+      }
+      if (statusFilter === 'preparing') {
+        return order.order_status === 'PREPARING';
+      }
+      if (statusFilter === 'ready') {
+        return order.order_status === 'READY_FOR_PICKUP' || order.order_status === 'READY_FOR_SERVICE';
+      }
+      if (statusFilter === 'completed') {
+        return order.order_status === 'COMPLETED' || order.order_status === 'SERVED';
+      }
+      return true;
+    });
+  }, [stationFilteredOrders, statusFilter, modeFilter]);
+
+  // Counts for tabs
+  const activeCount = useMemo(() => {
+    return stationFilteredOrders.filter((o) =>
+      ['ACCEPTED', 'PREPARING', 'PREPARATION_COMPLETED', 'READY_FOR_PICKUP', 'READY_FOR_SERVICE'].includes(
+        o.order_status
+      )
+    ).length;
+  }, [stationFilteredOrders]);
+
+  const readyCount = useMemo(() => {
+    return stationFilteredOrders.filter(
+      (o) => o.order_status === 'READY_FOR_PICKUP' || o.order_status === 'READY_FOR_SERVICE'
+    ).length;
+  }, [stationFilteredOrders]);
+
+  // Action: Item-level status update
+  const handleUpdateItemStatus = async (
+    orderId: string,
+    itemId: string,
+    newStatus: OrderItemStatus
+  ) => {
+    try {
+      await updateOrderItemStatus(
+        orderId,
+        itemId,
+        newStatus,
+        currentUser?.full_name || 'Chef'
+      );
+      loadKDSData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Item status update failed';
+      showToast({ type: 'error', title: 'Update Error', message: msg });
+    }
+  };
+
+  // Action: Start all items preparation
+  const handleStartAllPrep = async (orderId: string) => {
+    try {
+      await startTicketPreparation(orderId, currentUser?.full_name || 'Chef');
+      showToast({
+        type: 'info',
+        title: 'Cooking Commenced',
+        message: 'All ticket items marked preparing. Preparation timer started.',
+      });
+      loadKDSData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Action failed';
+      showToast({ type: 'error', title: 'Action Failed', message: msg });
+    }
+  };
+
+  // Action: Mark all ticket items ready
+  const handleMarkAllReady = async (orderId: string) => {
+    try {
+      const updated = await markTicketAllReady(orderId, currentUser?.full_name || 'Chef');
+      showToast({
+        type: 'success',
+        title: 'Ticket Marked Ready',
+        message: `Order #${updated.order_number} is ready for ${
+          updated.order_type === 'DINING' ? 'table service' : 'customer pickup'
+        }.`,
+      });
+      loadKDSData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Action failed';
+      showToast({ type: 'error', title: 'Action Failed', message: msg });
+    }
+  };
+
+  // Action: Bump ticket out of active queue
+  const handleBumpTicket = async (orderId: string) => {
+    try {
+      await updateOrderStatus(orderId, 'COMPLETED', 'Ticket bumped from KDS queue', undefined, currentUser?.full_name || 'Chef');
+      showToast({
+        type: 'info',
+        title: 'Ticket Bumped',
+        message: 'Order moved to completed history.',
+      });
+      loadKDSData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Bump ticket failed';
+      showToast({ type: 'error', title: 'Action Failed', message: msg });
+    }
+  };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 pb-20">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-brand-border pb-6">
-        <div>
-          <div className="flex items-center gap-2 text-xs font-heading font-bold text-brand-muted uppercase tracking-wider mb-1">
-            <Flame className="w-4 h-4 text-amber-500" />
-            <span>Kitchen Display System (KDS) Foundation</span>
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6 pb-28">
+      {/* Top Navigation & Station Ribbon */}
+      <KDSNav
+        stations={stations}
+        selectedStation={selectedStation}
+        onSelectStation={setSelectedStation}
+        statusFilter={statusFilter}
+        onStatusFilterChange={setStatusFilter}
+        modeFilter={modeFilter}
+        onModeFilterChange={setModeFilter}
+        activeTicketsCount={activeCount}
+        readyTicketsCount={readyCount}
+      />
+
+      {/* Main KDS Grid Layout */}
+      {displayedOrders.length === 0 ? (
+        <div className="bg-white rounded-3xl border-2 border-dashed border-brand-border p-16 text-center space-y-3">
+          <div className="w-14 h-14 rounded-2xl bg-brand-soft-yellow text-brand-black flex items-center justify-center mx-auto">
+            <CheckCircle2 className="w-8 h-8 text-emerald-600" />
           </div>
-          <h1 className="font-heading font-extrabold text-3xl text-brand-black">
-            Live Cooking Queue
-          </h1>
-          <p className="text-xs text-brand-muted mt-1">
-            Head Chef Station • Logged in as <strong className="text-brand-black">{currentUser?.full_name}</strong> ({currentUser?.role_id})
+          <h2 className="font-heading font-black text-xl text-brand-black">
+            Line Clear • All Orders Prepared
+          </h2>
+          <p className="text-xs text-brand-muted max-w-md mx-auto leading-relaxed">
+            There are currently no tickets matching the selected station or status criteria. Incoming customer and waiter orders will pop up here in real time.
           </p>
         </div>
-
-        <div className="flex items-center gap-2">
-          <Link to="/">
-            <Button variant="outline" size="sm" leftIcon={<ArrowLeft className="w-4 h-4" />}>
-              Customer Site
-            </Button>
-          </Link>
-          <Link to="/staff">
-            <Button variant="secondary" size="sm">
-              Floor / Staff Portal
-            </Button>
-          </Link>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          {displayedOrders.map((order) => (
+            <KDSTicketCard
+              key={order.id}
+              order={order}
+              stationFilter={selectedStation}
+              onUpdateItemStatus={handleUpdateItemStatus}
+              onStartAllPrep={handleStartAllPrep}
+              onMarkAllReady={handleMarkAllReady}
+              onBumpTicket={handleBumpTicket}
+            />
+          ))}
         </div>
-      </div>
-
-      {/* Ticket Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {MOCK_TICKETS.map((ticket) => (
-          <div
-            key={ticket.id}
-            className={`p-6 rounded-3xl border bg-white shadow-card-subtle flex flex-col justify-between space-y-4 ${
-              ticket.status === 'ready'
-                ? 'border-emerald-300 ring-2 ring-emerald-400/20'
-                : 'border-brand-border'
-            }`}
-          >
-            <div className="space-y-3">
-              {/* Top row */}
-              <div className="flex items-center justify-between">
-                <span className="font-heading font-black text-xl text-brand-black">
-                  {ticket.orderNumber}
-                </span>
-                <span
-                  className={`text-[10px] font-heading font-extrabold uppercase px-2.5 py-1 rounded-full ${
-                    ticket.status === 'ready'
-                      ? 'bg-emerald-100 text-emerald-800'
-                      : 'bg-amber-100 text-amber-900 animate-pulse'
-                  }`}
-                >
-                  {ticket.status === 'ready' ? 'Ready to Serve' : 'In Preparation'}
-                </span>
-              </div>
-
-              {/* Destination badge */}
-              <div className="flex items-center justify-between text-xs bg-brand-warm-white p-2.5 rounded-xl border border-brand-border/60">
-                <div className="flex items-center gap-1.5 font-bold text-brand-black">
-                  {ticket.mode === 'dining' ? (
-                    <Utensils className="w-3.5 h-3.5" />
-                  ) : (
-                    <ShoppingBag className="w-3.5 h-3.5 text-brand-yellow" />
-                  )}
-                  <span>{ticket.tableOrPickup}</span>
-                </div>
-                <span className="text-[11px] text-brand-muted flex items-center gap-1">
-                  <Clock className="w-3 h-3" /> {ticket.timeElapsed}
-                </span>
-              </div>
-
-              {/* Items List */}
-              <div className="space-y-2 pt-1">
-                {ticket.items.map((item, i) => (
-                  <div key={i} className="text-xs border-b border-brand-border/40 pb-2">
-                    <div className="flex items-baseline justify-between font-heading font-bold text-brand-black">
-                      <span>{item.name}</span>
-                      <span className="w-6 text-right text-brand-muted">x{item.qty}</span>
-                    </div>
-                    {item.notes && (
-                      <p className="text-[11px] text-amber-800 italic mt-0.5">
-                        Instructions: {item.notes}
-                      </p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* KDS Action Button */}
-            <div className="pt-2">
-              <Button
-                variant={ticket.status === 'ready' ? 'secondary' : 'primary'}
-                size="md"
-                className="w-full"
-                leftIcon={<CheckCircle2 className="w-4 h-4" />}
-                onClick={() => alert(`Ticket ${ticket.orderNumber} status toggled in KDS demo`)}
-              >
-                {ticket.status === 'ready' ? 'Mark Completed' : 'Mark Ready to Dispatch'}
-              </Button>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Realtime architecture note */}
-      <div className="p-4 rounded-2xl bg-brand-charcoal text-white text-xs flex items-center gap-3">
-        <Clock className="w-5 h-5 text-brand-yellow shrink-0" />
-        <p className="text-[11px] text-gray-300 font-sans">
-          This KDS board is designed for Supabase Realtime subscriptions. When customer orders are submitted from dining tables or self-pickup carts, live tickets immediately appear here with audio chime triggers and kitchen prep timers.
-        </p>
-      </div>
+      )}
     </div>
   );
 };
