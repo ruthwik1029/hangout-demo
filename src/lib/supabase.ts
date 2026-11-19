@@ -69,13 +69,17 @@ if (typeof window !== 'undefined' && supabaseAnonKey) {
 }
 
 export const isSupabaseConfigured = (): boolean => {
+  if (import.meta.env.MODE === 'test' && !import.meta.env.VITE_TEST_LIVE_SUPABASE) {
+    return false;
+  }
   return (
     Boolean(supabaseUrl) &&
     Boolean(supabaseAnonKey) &&
     !supabaseUrl.includes('placeholder') &&
     !supabaseAnonKey.includes('placeholder') &&
     !supabaseUrl.includes('your-project') &&
-    !supabaseAnonKey.includes('your-anon')
+    !supabaseAnonKey.includes('your-anon') &&
+    (supabaseAnonKey.startsWith('sb_publishable_') || supabaseAnonKey.startsWith('eyJ'))
   );
 };
 
@@ -2359,7 +2363,11 @@ export async function createBillSplits(
   if (orderIdx === -1) throw new Error('Order not found');
 
   const order = orders[orderIdx];
-  const total = order.total_amount;
+  // Reconcile to outstanding balance if partially paid, otherwise total amount
+  const total = (order.outstanding_balance != null && order.outstanding_balance > 0 && order.outstanding_balance <= order.total_amount)
+    ? order.outstanding_balance
+    : order.total_amount;
+
   const splits: BillSplit[] = [];
   const now = new Date().toISOString();
 
@@ -2391,7 +2399,7 @@ export async function createBillSplits(
       throw new Error('Custom split requires at least 2 guest amounts');
     }
     const sum = roundMoney(amounts.reduce((a, b) => a + b, 0));
-    if (Math.abs(sum - total) > 0.05) {
+    if (Math.abs(sum - total) > 0.01) {
       throw new Error(
         `Sum of split amounts (₹${sum.toFixed(2)}) does not match total payable bill (₹${total.toFixed(2)}). Difference: ₹${roundMoney(total - sum).toFixed(2)}`
       );
@@ -2421,22 +2429,39 @@ export async function createBillSplits(
 
     const items = order.items || [];
     const itemMap = new Map(items.map((i) => [i.id, i]));
-    const effectiveTaxRate = order.subtotal > 0 ? order.tax_amount / order.subtotal : 0.05;
+    // Derive effective tax rate directly from original order's snapshot without any hardcoded 5%
+    const effectiveTaxRate = order.subtotal > 0 ? (order.tax_amount / order.subtotal) : 0;
+    const discountRatio = order.subtotal > 0 ? ((order.discount_amount || 0) / order.subtotal) : 0;
 
-    let runningTotal = 0;
+    let allocatedPaise = 0;
+    const targetTotalPaise = Math.round(total * 100);
+
     splitIndices.forEach((idx, arrIdx) => {
       const itemIds = assignments[idx] || [];
-      const guestSubtotal = itemIds.reduce((sum, id) => {
-        const it = itemMap.get(id);
-        return sum + (it ? it.total_price : 0);
-      }, 0);
-
-      let guestAmount = roundMoney(guestSubtotal * (1 + effectiveTaxRate));
+      let guestPaise = 0;
 
       if (arrIdx === splitIndices.length - 1) {
-        guestAmount = roundMoney(total - runningTotal);
+        // Last guest gets exact remaining paise to guarantee exact penny-perfect reconciliation
+        guestPaise = targetTotalPaise - allocatedPaise;
       } else {
-        runningTotal = roundMoney(runningTotal + guestAmount);
+        const guestSubtotal = itemIds.reduce((sum, id) => {
+          const it = itemMap.get(id);
+          return sum + (it ? it.total_price : 0);
+        }, 0);
+
+        const guestTax = itemIds.reduce((taxSum, id) => {
+          const it = itemMap.get(id);
+          if (!it) return taxSum;
+          const rate = it.tax_rate_snapshot != null ? it.tax_rate_snapshot : (effectiveTaxRate * 100);
+          return taxSum + (it.total_price * (rate / 100));
+        }, 0);
+
+        const discountedSubtotal = guestSubtotal * (1 - discountRatio);
+        const discountedTax = guestTax * (1 - discountRatio);
+        const guestTotal = discountedSubtotal + discountedTax;
+
+        guestPaise = Math.round(guestTotal * 100);
+        allocatedPaise += guestPaise;
       }
 
       splits.push({
@@ -2445,7 +2470,7 @@ export async function createBillSplits(
         split_index: idx,
         label: `Guest ${idx}`,
         split_type: 'ITEMS',
-        amount: Math.max(0, guestAmount),
+        amount: Math.max(0, roundMoney(guestPaise / 100)),
         item_ids: itemIds,
         payment_status: 'UNPAID',
         payment_method: null,
@@ -2462,7 +2487,7 @@ export async function createBillSplits(
 
   order.is_split_bill = true;
   order.split_count = splits.length;
-  order.outstanding_balance = order.total_amount;
+  order.outstanding_balance = total;
   order.bill_splits = splits;
   orders[orderIdx] = order;
   setLocalStore(LOCAL_STORAGE_ORDERS, orders);

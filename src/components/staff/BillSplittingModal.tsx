@@ -283,7 +283,7 @@ export const BillSplittingModal: React.FC<BillSplittingModalProps> = ({
                 <div className="text-xs text-brand-muted flex items-center justify-between pt-2 border-t border-brand-border/60">
                   <span>Each Guest Pays:</span>
                   <span className="font-mono font-bold text-brand-black text-sm">
-                    ~₹{roundMoney(order.total_amount / equalCount).toFixed(2)}
+                    ~₹{roundMoney(((order.outstanding_balance ?? order.total_amount) / equalCount)).toFixed(2)}
                   </span>
                 </div>
 
@@ -302,7 +302,7 @@ export const BillSplittingModal: React.FC<BillSplittingModalProps> = ({
             {activeMode === 'CUSTOM' && (
               <div className="p-4 bg-brand-warm-white rounded-2xl border border-brand-border space-y-3">
                 <p className="text-xs text-brand-muted">
-                  Enter custom amounts for each guest. Total must equal ₹{order.total_amount.toFixed(2)}.
+                  Enter custom amounts for each guest. Total must equal ₹{(order.outstanding_balance ?? order.total_amount).toFixed(2)}.
                 </p>
 
                 <div className="grid grid-cols-2 gap-3">
