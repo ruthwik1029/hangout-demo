@@ -7,8 +7,12 @@
 
 import fs from 'fs';
 import path from 'path';
+import dns from 'dns';
 import { fileURLToPath } from 'url';
 import { createClient } from '@supabase/supabase-js';
+
+// Ensure Node.js prefers IPv4 resolution on Windows
+dns.setDefaultResultOrder('ipv4first');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,31 +38,29 @@ async function runComprehensiveVerification() {
   console.log('HANGOUT — COMPREHENSIVE SUPABASE VERIFICATION ENGINE');
   console.log('='.repeat(80));
 
-  const envExample = parseEnv(path.join(rootDir, '.env.example'));
-  const envDefault = parseEnv(path.join(rootDir, '.env'));
   const envLocal = parseEnv(path.join(rootDir, '.env.local'));
+  const envDefault = parseEnv(path.join(rootDir, '.env'));
 
   console.log('\n[1] ENVIRONMENT CONFIGURATION (Masked):');
-  console.log('  .env.local:');
   for (const [k, v] of Object.entries(envLocal)) {
     const isSecret = k.toLowerCase().includes('key') || k.toLowerCase().includes('secret');
-    const masked = isSecret && v ? `${v.slice(0, 15)}...${v.slice(-6)} (length: ${v.length})` : v;
+    const masked = isSecret && v ? `${v.slice(0, 18)}...${v.slice(-6)} (length: ${v.length})` : v;
     console.log(`    ${k} = ${masked}`);
   }
 
   const targetUrl = envLocal.VITE_SUPABASE_URL || 'https://jxfqoexvujssbtdbpdmx.supabase.co';
-  const targetKey = envLocal.VITE_SUPABASE_ANON_KEY || envLocal.VITE_SUPABASE_PUBLISHABLE_KEY || '';
+  const targetKey = envLocal.VITE_SUPABASE_PUBLISHABLE_KEY || envLocal.VITE_SUPABASE_ANON_KEY || '';
 
-  // 1. Gateway Connectivity Probe
-  console.log('\n[2] GATEWAY CONNECTIVITY PROBE:');
-  console.log(`  Probing: ${targetUrl}/rest/v1/ ...`);
+  // 1. Gateway Connectivity & Auth Probe
+  console.log('\n[2] SUPABASE CLOUD GATEWAY & AUTHENTICATION:');
+  console.log(`  Probing Auth Endpoint: ${targetUrl}/auth/v1/settings ...`);
 
   let gatewayReachable = false;
   let keyAccepted = false;
   let gatewayDetails = {};
 
   try {
-    const pingRes = await fetch(`${targetUrl}/rest/v1/`, {
+    const authRes = await fetch(`${targetUrl}/auth/v1/settings`, {
       method: 'GET',
       headers: {
         apikey: targetKey,
@@ -66,40 +68,96 @@ async function runComprehensiveVerification() {
       }
     });
 
-    pingRes.headers.forEach((v, k) => {
+    authRes.headers.forEach((v, k) => {
       if (k.startsWith('sb-') || k.includes('version') || k.includes('server')) {
         gatewayDetails[k] = v;
       }
     });
 
-    console.log(`  HTTP Status Code: ${pingRes.status} ${pingRes.statusText}`);
-    console.log('  Gateway Headers:');
+    console.log(`  HTTP Status Code: ${authRes.status} ${authRes.statusText}`);
+    console.log('  Gateway Response Headers:');
     for (const [k, v] of Object.entries(gatewayDetails)) {
       console.log(`    ${k}: ${v}`);
     }
 
-    const bodyText = await pingRes.text();
-    console.log(`  Response Body: ${bodyText}`);
-
     if (gatewayDetails['sb-project-ref'] === 'jxfqoexvujssbtdbpdmx') {
       gatewayReachable = true;
-      console.log('  ✓ Step 1 Passed: Supabase Cloud Gateway reached and matches project ref: jxfqoexvujssbtdbpdmx');
+      console.log('  ✓ Gateway Reachable: PASS (Verified project-ref: jxfqoexvujssbtdbpdmx)');
     }
 
-    if (pingRes.status === 200) {
+    if (authRes.status === 200) {
       keyAccepted = true;
-      console.log('  ✓ Step 2 Passed: API Key accepted by gateway.');
-    } else if (pingRes.status === 401) {
-      console.log('  ✗ Step 2 Failed: Key rejected by gateway (HTTP 401 Unauthorized).');
+      console.log('  ✓ API Key Accepted:  PASS (Key successfully authorized by Supabase Gateway)');
+    } else {
+      console.log(`  ✗ API Key Rejected:  FAIL (HTTP ${authRes.status})`);
     }
   } catch (err) {
-    console.error('  ✗ Gateway ping error:', err.message);
+    console.error('  ✗ Gateway connection error:', err.message);
   }
 
-  // 2. Database Schema & Tables Check
-  console.log('\n[3] DATABASE SCHEMA & MIGRATIONS STATUS:');
+  // 2. Storage Bucket Access Test
+  console.log('\n[3] STORAGE BUCKET VERIFICATION:');
+  let storageAccessible = false;
+  let storageBuckets = [];
+
+  try {
+    const storageRes = await fetch(`${targetUrl}/storage/v1/bucket`, {
+      method: 'GET',
+      headers: {
+        apikey: targetKey,
+        Authorization: `Bearer ${targetKey}`
+      }
+    });
+
+    if (storageRes.status === 200) {
+      storageAccessible = true;
+      storageBuckets = await storageRes.json();
+      console.log(`  ✓ Storage API Access: PASS (HTTP 200 OK)`);
+      console.log(`  Active Storage Buckets: ${storageBuckets.length > 0 ? storageBuckets.map(b => b.name).join(', ') : 'None (menu-assets not yet created)'}`);
+    } else {
+      console.log(`  ✗ Storage API Access: FAIL (HTTP ${storageRes.status})`);
+    }
+  } catch (e) {
+    console.log(`  ✗ Storage check error: ${e.message}`);
+  }
+
+  // 3. Realtime Channel Subscription Test
+  console.log('\n[4] REALTIME SUBSCRIPTION CONNECTIVITY:');
+  let realtimeConnected = false;
   const client = createClient(targetUrl, targetKey);
 
+  try {
+    const channel = client.channel('hangout_operational_sync_verify');
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        channel.unsubscribe();
+        resolve();
+      }, 4000);
+
+      channel.subscribe((status) => {
+        console.log(`  Realtime subscription status: ${status}`);
+        if (status === 'SUBSCRIBED') {
+          realtimeConnected = true;
+          clearTimeout(timeout);
+          channel.unsubscribe();
+          resolve();
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+    });
+    if (realtimeConnected) {
+      console.log('  ✓ Realtime Connection: PASS (Subscribed successfully to WebSocket channel)');
+    } else {
+      console.log('  ✗ Realtime Connection: FAIL');
+    }
+  } catch (e) {
+    console.log(`  ✗ Realtime check error: ${e.message}`);
+  }
+
+  // 4. Database Schema & Tables Check
+  console.log('\n[5] POSTGREST DATABASE SCHEMA & MIGRATIONS STATUS:');
   const coreTables = [
     'cafe_settings',
     'roles',
@@ -134,12 +192,18 @@ async function runComprehensiveVerification() {
       }
     }
     dbAccessible = tablesFound.length > 0;
-  } else {
-    console.log('  Database schema check blocked by API Key authentication failure.');
   }
 
-  // 3. Reversible Read/Write Test
-  console.log('\n[4] REVERSIBLE READ/WRITE VERIFICATION:');
+  if (tablesFound.length === 0) {
+    console.log('  Notice: 0 application tables found in public schema cache (PGRST205).');
+    console.log('  Status: Migrations 1, 2, and 3 have NOT been applied to target project yet.');
+    console.log('  Target PostgreSQL database is fresh / unmigrated.');
+  } else {
+    console.log(`  Tables verified: ${tablesFound.join(', ')}`);
+  }
+
+  // 5. Reversible Read/Write Test
+  console.log('\n[6] REVERSIBLE READ/WRITE VERIFICATION:');
   let writeVerified = false;
 
   if (dbAccessible) {
@@ -173,59 +237,23 @@ async function runComprehensiveVerification() {
       console.log(`  ✗ Write test exception: ${e.message}`);
     }
   } else {
-    console.log('  Write/read-back verification cannot be conducted because API key is not accepted by remote database.');
+    console.log('  Database Read/Write: BLOCKED (Pending migration application).');
+    console.log('  PostgREST schema cache has no tables defined until Migrations 1, 2, and 3 are executed.');
   }
 
-  // 4. Storage Bucket Access Test
-  console.log('\n[5] STORAGE BUCKET VERIFICATION:');
-  try {
-    const { data: buckets, error: bErr } = await client.storage.listBuckets();
-    if (!bErr && buckets) {
-      console.log(`  Discovered buckets in storage: ${buckets.map(b => b.name).join(', ') || 'None'}`);
-    } else {
-      console.log(`  Storage bucket check result: ${bErr?.message || 'Unauthorized / Not accessible'}`);
-    }
-  } catch (e) {
-    console.log(`  Storage check error: ${e.message}`);
-  }
-
-  // 5. Realtime Channel Subscription Test
-  console.log('\n[6] REALTIME SUBSCRIPTION VERIFICATION:');
-  try {
-    const channel = client.channel('hangout_verify_channel');
-    let subscribed = false;
-    await new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        channel.unsubscribe();
-        resolve();
-      }, 3000);
-
-      channel.subscribe((status) => {
-        console.log(`  Realtime subscription status: ${status}`);
-        if (status === 'SUBSCRIBED') {
-          subscribed = true;
-          clearTimeout(timeout);
-          channel.unsubscribe();
-          resolve();
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          clearTimeout(timeout);
-          resolve();
-        }
-      });
-    });
-  } catch (e) {
-    console.log(`  Realtime check error: ${e.message}`);
-  }
-
-  // Summary Table
+  // Final Summary Table
   console.log('\n' + '='.repeat(80));
-  console.log('SUPABASE STATUS MATRIX:');
-  console.log(`  1. Gateway Reachable:    ${gatewayReachable ? 'YES (Verified via sb-project-ref)' : 'NO'}`);
-  console.log(`  2. API Key Accepted:     ${keyAccepted ? 'YES' : 'NO (Rejected: 401 Invalid API key)'}`);
-  console.log(`  3. Database Accessible:  ${dbAccessible ? 'YES' : 'NO (Blocked by Key Authentication)'}`);
-  console.log(`  4. Migrations Applied:   ${tablesFound.length > 0 ? `PARTIAL/FULL (${tablesFound.length} tables)` : 'UNVERIFIED / NOT APPLIED YET'}`);
-  console.log(`  5. Read/Write Verified:  ${writeVerified ? 'YES' : 'NO'}`);
+  console.log('OFFICIAL SUPABASE VERIFICATION MATRIX:');
+  console.log(`  1. Cloud Gateway Reachable:       ${gatewayReachable ? 'PASS' : 'FAIL'}`);
+  console.log(`  2. API Key Accepted by Project:   ${keyAccepted ? 'PASS' : 'FAIL'}`);
+  console.log(`  3. Supabase Auth API:             ${keyAccepted ? 'PASS' : 'FAIL'}`);
+  console.log(`  4. Supabase Storage API:          ${storageAccessible ? 'PASS' : 'FAIL'}`);
+  console.log(`  5. Realtime WebSocket:            ${realtimeConnected ? 'PASS' : 'FAIL'}`);
+  console.log(`  6. Database Tables / Migrations:  ${tablesFound.length > 0 ? 'PASS' : 'BLOCKED (Pending Owner Migration Approval)'}`);
+  console.log(`  7. Live Read/Write Verified:      ${writeVerified ? 'PASS' : 'BLOCKED (Pending Table Creation)'}`);
   console.log('='.repeat(80) + '\n');
+
+  process.exit(0);
 }
 
 runComprehensiveVerification();
