@@ -46,16 +46,118 @@ import {
 import { publishRealtimeEvent } from './realtime';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabaseAnonKey =
+  import.meta.env.VITE_SUPABASE_ANON_KEY ||
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+  '';
+
+// Security safeguard: Prevent accidental exposure or usage of service_role key in client bundle
+if (typeof window !== 'undefined' && supabaseAnonKey) {
+  try {
+    const payloadBase64 = supabaseAnonKey.split('.')[1];
+    if (payloadBase64) {
+      const decoded = JSON.parse(atob(payloadBase64));
+      if (decoded.role === 'service_role') {
+        throw new Error('SECURITY VIOLATION: Supabase service_role key must NEVER be exposed in frontend client code!');
+      }
+    }
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message.includes('SECURITY VIOLATION')) {
+      throw err;
+    }
+  }
+}
 
 export const isSupabaseConfigured = (): boolean => {
   return (
     Boolean(supabaseUrl) &&
     Boolean(supabaseAnonKey) &&
     !supabaseUrl.includes('placeholder') &&
-    !supabaseAnonKey.includes('placeholder')
+    !supabaseAnonKey.includes('placeholder') &&
+    !supabaseUrl.includes('your-project') &&
+    !supabaseAnonKey.includes('your-anon')
   );
 };
+
+export function getDataSourceMode(): 'supabase' | 'local_storage' {
+  return isSupabaseConfigured() ? 'supabase' : 'local_storage';
+}
+
+export interface SupabaseConnectionHealth {
+  isConfigured: boolean;
+  url: string;
+  projectRef: string;
+  status: 'unconfigured' | 'connected' | 'auth_error' | 'network_error';
+  message: string;
+  testedAt: string;
+  tablesChecked?: Record<string, boolean>;
+}
+
+export async function checkSupabaseConnectionHealth(): Promise<SupabaseConnectionHealth> {
+  const configured = isSupabaseConfigured();
+  const projectRef = supabaseUrl ? supabaseUrl.replace('https://', '').split('.')[0] : '';
+
+  if (!configured) {
+    return {
+      isConfigured: false,
+      url: supabaseUrl,
+      projectRef,
+      status: 'unconfigured',
+      message: 'Supabase credentials are not configured or still contain placeholder values.',
+      testedAt: new Date().toISOString(),
+    };
+  }
+
+  try {
+    const { data: _data, error, status } = await supabase
+      .from('cafe_settings')
+      .select('id, cafe_name')
+      .limit(1);
+
+    if (error) {
+      if (status === 401 || error.message.includes('API key') || error.message.includes('JWT')) {
+        return {
+          isConfigured: true,
+          url: supabaseUrl,
+          projectRef,
+          status: 'auth_error',
+          message: `Authentication failed (HTTP ${status}): ${error.message}. Please verify the publishable/anon key for project ${projectRef}.`,
+          testedAt: new Date().toISOString(),
+        };
+      }
+      return {
+        isConfigured: true,
+        url: supabaseUrl,
+        projectRef,
+        status: 'network_error',
+        message: `Supabase query returned error (${status}): ${error.message}`,
+        testedAt: new Date().toISOString(),
+      };
+    }
+
+    return {
+      isConfigured: true,
+      url: supabaseUrl,
+      projectRef,
+      status: 'connected',
+      message: `Successfully connected to Supabase project ${projectRef} and verified read access.`,
+      testedAt: new Date().toISOString(),
+      tablesChecked: {
+        cafe_settings: true,
+      },
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      isConfigured: true,
+      url: supabaseUrl,
+      projectRef,
+      status: 'network_error',
+      message: `Connection attempt failed: ${msg}`,
+      testedAt: new Date().toISOString(),
+    };
+  }
+}
 
 // Create client (with dummy values if not configured, preventing crash)
 export const supabase: SupabaseClient = createClient(
@@ -129,14 +231,14 @@ export async function fetchCafeSettings(): Promise<CafeSettings> {
 
 export async function saveCafeSettings(settings: CafeSettings): Promise<boolean> {
   if (isSupabaseConfigured()) {
-    try {
-      const { error } = await supabase
-        .from('cafe_settings')
-        .upsert(settings);
-      if (!error) return true;
-    } catch (e) {
-      console.warn('Supabase saveCafeSettings failed, saving locally:', e);
+    const { error } = await supabase
+      .from('cafe_settings')
+      .upsert(settings);
+    if (error) {
+      console.error('Supabase saveCafeSettings failed:', error);
+      throw new Error(`Failed to save cafe settings to Supabase: ${error.message}`);
     }
+    return true;
   }
   setLocalStore(LOCAL_STORAGE_SETTINGS, settings);
   return true;
@@ -165,14 +267,14 @@ export async function fetchTaxConfiguration(): Promise<TaxConfiguration> {
 
 export async function saveTaxConfiguration(config: TaxConfiguration): Promise<boolean> {
   if (isSupabaseConfigured()) {
-    try {
-      const { error } = await supabase
-        .from('tax_configurations')
-        .upsert(config);
-      if (!error) return true;
-    } catch (e) {
-      console.warn('Supabase saveTaxConfiguration failed, saving locally:', e);
+    const { error } = await supabase
+      .from('tax_configurations')
+      .upsert(config);
+    if (error) {
+      console.error('Supabase saveTaxConfiguration failed:', error);
+      throw new Error(`Failed to save tax configuration to Supabase: ${error.message}`);
     }
+    return true;
   }
   setLocalStore(LOCAL_STORAGE_TAX_CONFIG, config);
   return true;
@@ -348,12 +450,12 @@ export async function fetchPickupSettings(): Promise<PickupSettings> {
 
 export async function savePickupSettings(settings: PickupSettings): Promise<boolean> {
   if (isSupabaseConfigured()) {
-    try {
-      const { error } = await supabase.from('pickup_settings').upsert(settings);
-      if (!error) return true;
-    } catch (e) {
-      console.warn('Supabase savePickupSettings failed, saving locally:', e);
+    const { error } = await supabase.from('pickup_settings').upsert(settings);
+    if (error) {
+      console.error('Supabase savePickupSettings failed:', error);
+      throw new Error(`Failed to save pickup settings to Supabase: ${error.message}`);
     }
+    return true;
   }
   setLocalStore(LOCAL_STORAGE_PICKUP_SETTINGS, settings);
   return true;
@@ -412,29 +514,32 @@ export async function saveCategory(category: Partial<MenuCategory> & { name: str
     is_active: category.is_active ?? true,
   };
 
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.from('menu_categories').insert(newCat).select().single();
+    if (error) {
+      console.error('Supabase saveCategory error:', error);
+      throw new Error(`Failed to save category to Supabase: ${error.message}`);
+    }
+    return (data as MenuCategory) || newCat;
+  }
+
   categories.push(newCat);
   setLocalStore(LOCAL_STORAGE_CATEGORIES, categories);
-  if (isSupabaseConfigured()) {
-    try {
-      await supabase.from('menu_categories').insert(newCat);
-    } catch {
-      // Fallback
-    }
-  }
   return newCat;
 }
 
 export async function deleteOrArchiveCategory(id: string): Promise<boolean> {
+  if (isSupabaseConfigured()) {
+    const { error } = await supabase.from('menu_categories').update({ is_active: false }).eq('id', id);
+    if (error) {
+      console.error('Supabase deleteOrArchiveCategory error:', error);
+      throw new Error(`Failed to archive category in Supabase: ${error.message}`);
+    }
+    return true;
+  }
   const categories = await fetchMenuCategories();
   const filtered = categories.filter((c) => c.id !== id);
   setLocalStore(LOCAL_STORAGE_CATEGORIES, filtered);
-  if (isSupabaseConfigured()) {
-    try {
-      await supabase.from('menu_categories').update({ is_active: false }).eq('id', id);
-    } catch {
-      // Fallback
-    }
-  }
   return true;
 }
 
@@ -498,14 +603,13 @@ export async function saveMenuItem(
         price: priceVal,
         slug,
       };
-      items[idx] = updated;
-      setLocalStore(LOCAL_STORAGE_MENU_ITEMS, items);
       if (isSupabaseConfigured()) {
-        try {
-          await supabase.from('menu_items').upsert(updated);
-        } catch {
-          // Fallback
+        const { error } = await supabase.from('menu_items').upsert(updated);
+        if (error) {
+          console.error('Supabase saveMenuItem update error:', error);
+          throw new Error(`Failed to update menu item in Supabase: ${error.message}`);
         }
+        return updated;
       }
       return updated;
     }
@@ -533,32 +637,35 @@ export async function saveMenuItem(
     addons: item.addons || [],
   };
 
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.from('menu_items').insert(newItem).select().single();
+    if (error) {
+      console.error('Supabase saveMenuItem insert error:', error);
+      throw new Error(`Failed to create menu item in Supabase: ${error.message}`);
+    }
+    return (data as MenuItem) || newItem;
+  }
+
   items.push(newItem);
   setLocalStore(LOCAL_STORAGE_MENU_ITEMS, items);
-  if (isSupabaseConfigured()) {
-    try {
-      await supabase.from('menu_items').insert(newItem);
-    } catch {
-      // Fallback
-    }
-  }
   return newItem;
 }
 
 export async function archiveMenuItem(id: string): Promise<boolean> {
+  if (isSupabaseConfigured()) {
+    const { error } = await supabase.from('menu_items').update({ is_available: false }).eq('id', id);
+    if (error) {
+      console.error('Supabase archiveMenuItem error:', error);
+      throw new Error(`Failed to archive menu item in Supabase: ${error.message}`);
+    }
+    return true;
+  }
   const items = await fetchAllAdminMenuItems();
   const idx = items.findIndex((i) => i.id === id);
   if (idx >= 0) {
     items[idx].is_available = false;
     items[idx].is_archived = true;
     setLocalStore(LOCAL_STORAGE_MENU_ITEMS, items);
-    if (isSupabaseConfigured()) {
-      try {
-        await supabase.from('menu_items').update({ is_available: false }).eq('id', id);
-      } catch {
-        // Fallback
-      }
-    }
   }
   return true;
 }
@@ -1027,43 +1134,47 @@ export async function createOrder(
   };
 
   if (isSupabaseConfigured()) {
-    try {
-      const { data: dbOrder, error: orderErr } = await supabase
-        .from('orders')
-        .insert({
-          id: newOrderId,
-          order_number: orderNumber,
-          customer_id: orderData.customer_id,
-          customer_name_snapshot: orderData.customer_name_snapshot,
-          customer_mobile_snapshot: orderData.customer_mobile_snapshot,
-          customer_email_snapshot: orderData.customer_email_snapshot,
-          order_type: orderData.order_type,
-          table_id: orderData.table_id,
-          table_number_snapshot: orderData.table_number_snapshot,
-          pickup_time_slot: orderData.pickup_time_slot,
-          pickup_notes: orderData.pickup_notes,
-          subtotal: orderData.subtotal,
-          discount_amount: orderData.discount_amount,
-          discount_code: orderData.discount_code,
-          tax_amount: orderData.tax_amount,
-          tax_breakdown: orderData.tax_breakdown,
-          total_amount: orderData.total_amount,
-          payment_method: orderData.payment_method,
-          payment_status: orderData.payment_status,
-          order_status: orderData.order_status,
-          special_instructions: orderData.special_instructions,
-        })
-        .select()
-        .single();
+    const { data: dbOrder, error: orderErr } = await supabase
+      .from('orders')
+      .insert({
+        id: newOrderId,
+        order_number: orderNumber,
+        customer_id: orderData.customer_id,
+        customer_name_snapshot: orderData.customer_name_snapshot,
+        customer_mobile_snapshot: orderData.customer_mobile_snapshot,
+        customer_email_snapshot: orderData.customer_email_snapshot,
+        order_type: orderData.order_type,
+        table_id: orderData.table_id,
+        table_number_snapshot: orderData.table_number_snapshot,
+        pickup_time_slot: orderData.pickup_time_slot,
+        pickup_notes: orderData.pickup_notes,
+        subtotal: orderData.subtotal,
+        discount_amount: orderData.discount_amount,
+        discount_code: orderData.discount_code,
+        tax_amount: orderData.tax_amount,
+        tax_breakdown: orderData.tax_breakdown,
+        total_amount: orderData.total_amount,
+        payment_method: orderData.payment_method,
+        payment_status: orderData.payment_status,
+        order_status: orderData.order_status,
+        special_instructions: orderData.special_instructions,
+      })
+      .select()
+      .single();
 
-      if (!orderErr && dbOrder) {
-        if (createdOrder.items && createdOrder.items.length > 0) {
-          await supabase.from('order_items').insert(createdOrder.items);
-        }
-      }
-    } catch (e) {
-      console.warn('Supabase createOrder failed, fallback to local:', e);
+    if (orderErr) {
+      console.error('Supabase createOrder error:', orderErr);
+      throw new Error(`Failed to create order in Supabase: ${orderErr.message}`);
     }
+
+    if (dbOrder && createdOrder.items && createdOrder.items.length > 0) {
+      const { error: itemsErr } = await supabase.from('order_items').insert(createdOrder.items);
+      if (itemsErr) {
+        console.error('Supabase createOrder items error:', itemsErr);
+        throw new Error(`Failed to insert order items in Supabase: ${itemsErr.message}`);
+      }
+    }
+    return createdOrder;
   }
 
   // Save to local store
@@ -1210,6 +1321,31 @@ export async function updateOrderStatus(
     currentOrder.rejection_reason = reasonOrRole || 'Order rejected by cafe management';
   } else if (newStatus === 'CANCELLED') {
     currentOrder.cancellation_reason = reasonOrRole || 'Order cancelled';
+  }
+
+  if (isSupabaseConfigured()) {
+    const updatePayload: Record<string, unknown> = {
+      order_status: newStatus,
+      updated_at: timestamp,
+    };
+    if (paymentStatusOrReason === 'PAID' || reasonOrRole === 'PAID') {
+      updatePayload.payment_status = 'PAID';
+    }
+    if (newStatus === 'REJECTED') {
+      updatePayload.rejection_reason = reasonOrRole || 'Order rejected by cafe management';
+    } else if (newStatus === 'CANCELLED') {
+      updatePayload.cancellation_reason = reasonOrRole || 'Order cancelled';
+    }
+
+    const { error: sbErr } = await supabase
+      .from('orders')
+      .update(updatePayload)
+      .eq('id', orderId);
+
+    if (sbErr) {
+      console.error('Supabase updateOrderStatus error:', sbErr);
+      throw new Error(`Failed to update order status in Supabase: ${sbErr.message}`);
+    }
   }
 
   orders[idx] = currentOrder;
