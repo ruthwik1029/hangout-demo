@@ -21,3 +21,4 @@ export const MenuItemSkeleton: React.FC = () => {
     </div>
   );
 };
+

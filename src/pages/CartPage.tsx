@@ -17,7 +17,6 @@ import {
   AlertCircle,
   QrCode,
   FileText,
-  Clock,
 } from 'lucide-react';
 
 interface CartPageProps {
@@ -284,7 +283,7 @@ export const CartPage: React.FC<CartPageProps> = ({ onOpenTableSelector }) => {
                   <span className="font-medium">₹{subtotal.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-brand-muted">
-                  <span>GST (5% Configured)</span>
+                  <span>GST (CGST + SGST Dynamic)</span>
                   <span className="font-medium">₹{gstAmount.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between font-heading font-extrabold text-lg text-brand-black pt-3 border-t border-brand-border">
@@ -293,31 +292,14 @@ export const CartPage: React.FC<CartPageProps> = ({ onOpenTableSelector }) => {
                 </div>
               </div>
 
-              {/* Batch 01 Architecture Notice */}
-              <div className="p-3.5 rounded-2xl bg-brand-charcoal text-white text-xs space-y-1">
-                <div className="flex items-center gap-1.5 text-brand-yellow font-bold">
-                  <Clock className="w-4 h-4" />
-                  <span>Batch 01 Foundation Scope</span>
-                </div>
-                <p className="text-[11px] text-gray-300 leading-relaxed font-sans">
-                  The order summary and customer session architecture is complete. Full payment gateway integration and kitchen dispatch belong to the next batch.
-                </p>
-              </div>
-
               {/* Action Button */}
               <Button
                 variant="primary"
                 size="lg"
                 className="w-full"
-                onClick={() => {
-                  if (!isAuthenticated) {
-                    openRegisterModal();
-                  } else {
-                    alert('Order Summary Verified! In Batch 02, this proceeds to checkout & payments.');
-                  }
-                }}
+                onClick={() => navigate('/checkout')}
               >
-                {isAuthenticated ? 'Order Ready for Dispatch (Batch 02)' : 'Check In to Proceed'}
+                Proceed to Checkout
               </Button>
             </div>
           </div>

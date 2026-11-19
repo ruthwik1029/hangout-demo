@@ -55,3 +55,4 @@ export const TakeawayNoticeBanner: React.FC<{ compact?: boolean }> = ({ compact 
     </div>
   );
 };
+

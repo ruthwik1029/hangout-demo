@@ -72,3 +72,4 @@ describe('Separate Dining and Takeaway Carts Architecture', () => {
     expect(result.current.cart.grandTotal).toBe(441);
   });
 });
+

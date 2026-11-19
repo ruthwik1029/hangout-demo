@@ -12,6 +12,8 @@ interface CustomerContextType {
   openRegisterModal: () => void;
   closeRegisterModal: () => void;
   registerCustomer: (fullName: string, mobileNumber: string, email?: string) => Promise<boolean>;
+  registerGuest: (fullName: string, mobileNumber: string, email?: string) => Promise<Customer | null>;
+  setCustomer: (customer: Customer | null) => void;
   logoutCustomer: () => void;
   validateMobile: (mobile: string) => { isValid: boolean; error?: string };
 }
@@ -128,6 +130,36 @@ export const CustomerProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     [mode, currentTable, showToast]
   );
 
+  const registerGuest = useCallback(
+    async (fullName: string, mobileNumber: string, email?: string): Promise<Customer | null> => {
+      try {
+        const customer = await registerOrFindCustomer(fullName, mobileNumber, email);
+        const session = await createCustomerSession(customer, mode, currentTable);
+
+        setCurrentCustomer(customer);
+        setCurrentSession(session);
+
+        localStorage.setItem(STORAGE_ACTIVE_CUSTOMER, JSON.stringify(customer));
+        localStorage.setItem(STORAGE_ACTIVE_SESSION, JSON.stringify(session));
+
+        return customer;
+      } catch (e) {
+        console.error('Guest registration failed:', e);
+        return null;
+      }
+    },
+    [mode, currentTable]
+  );
+
+  const setCustomer = useCallback((customer: Customer | null) => {
+    setCurrentCustomer(customer);
+    if (customer) {
+      localStorage.setItem(STORAGE_ACTIVE_CUSTOMER, JSON.stringify(customer));
+    } else {
+      localStorage.removeItem(STORAGE_ACTIVE_CUSTOMER);
+    }
+  }, []);
+
   const logoutCustomer = useCallback(() => {
     setCurrentCustomer(null);
     setCurrentSession(null);
@@ -150,6 +182,8 @@ export const CustomerProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         openRegisterModal: () => setIsRegisterModalOpen(true),
         closeRegisterModal: () => setIsRegisterModalOpen(false),
         registerCustomer,
+        registerGuest,
+        setCustomer,
         logoutCustomer,
         validateMobile,
       }}

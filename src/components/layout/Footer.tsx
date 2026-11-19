@@ -136,7 +136,7 @@ export const Footer: React.FC = () => {
           <div className="flex items-center gap-4">
             <span>GST Number: 29AAAAA0000A1Z5</span>
             <span>•</span>
-            <span>Batch 01: Customer Foundation</span>
+            <span>Batch 02: Ordering Engine & Admin Portal</span>
           </div>
         </div>
       </div>

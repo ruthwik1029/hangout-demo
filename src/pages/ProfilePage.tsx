@@ -1,7 +1,11 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCustomer } from '../context/CustomerContext';
 import { useOrderMode } from '../context/OrderModeContext';
+import { useCart } from '../context/CartContext';
+import { useToast } from '../context/ToastContext';
+import { fetchCustomerOrders, fetchMenuItems } from '../lib/supabase';
+import { Order, MenuItem } from '../types';
 import { Button } from '../components/common/Button';
 import {
   User,
@@ -12,13 +16,61 @@ import {
   LogOut,
   ArrowLeft,
   Key,
+  RotateCcw,
+  Receipt,
+  ExternalLink,
+  Clock,
 } from 'lucide-react';
 
 export const ProfilePage: React.FC = () => {
   const { currentCustomer, currentSession, isAuthenticated, openRegisterModal, logoutCustomer } =
     useCustomer();
   const { mode, currentTable } = useOrderMode();
+  const { addItem } = useCart();
+  const { showToast } = useToast();
   const navigate = useNavigate();
+
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loadingOrders, setLoadingOrders] = useState(false);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+
+  useEffect(() => {
+    if (!currentCustomer) return;
+    setLoadingOrders(true);
+    fetchCustomerOrders(currentCustomer.id).then((res) => {
+      setOrders(res);
+      setLoadingOrders(false);
+    });
+    fetchMenuItems().then(setMenuItems);
+  }, [currentCustomer]);
+
+  const handleReorder = (order: Order) => {
+    if (!order.items || order.items.length === 0) return;
+
+    let addedCount = 0;
+    for (const item of order.items) {
+      const match = menuItems.find((m) => m.id === item.menu_item_id);
+      if (match && match.is_available) {
+        addItem(match, item.quantity);
+        addedCount++;
+      }
+    }
+
+    if (addedCount > 0) {
+      showToast({
+        type: 'success',
+        title: 'Reordered Items Added',
+        message: `${addedCount} items from #${order.order_number} added to your cart.`,
+      });
+      navigate('/cart');
+    } else {
+      showToast({
+        type: 'error',
+        title: 'Unavailable',
+        message: 'The items in this order are currently out of stock.',
+      });
+    }
+  };
 
   if (!isAuthenticated || !currentCustomer) {
     return (
@@ -45,7 +97,7 @@ export const ProfilePage: React.FC = () => {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-8 space-y-6 pb-24">
+    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 pb-24">
       {/* Back Button */}
       <button
         onClick={() => navigate('/')}
@@ -135,6 +187,114 @@ export const ProfilePage: React.FC = () => {
             Customer identities are protected by unique session bearer tokens rather than treating mobile numbers alone as proof of identity.
           </p>
         </div>
+      </div>
+
+      {/* Customer Order History Section */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="font-heading font-extrabold text-xl text-brand-black flex items-center gap-2">
+            <Receipt className="w-5 h-5 text-brand-black" />
+            <span>Order History</span>
+          </h2>
+          <span className="text-xs text-brand-muted">
+            {orders.length} {orders.length === 1 ? 'order' : 'orders'} placed
+          </span>
+        </div>
+
+        {loadingOrders ? (
+          <div className="p-12 text-center text-xs text-brand-muted">Loading your orders...</div>
+        ) : orders.length === 0 ? (
+          <div className="p-8 bg-white rounded-3xl border border-brand-border text-center space-y-3">
+            <p className="text-xs text-brand-muted">You haven&apos;t placed any orders with HANGOUT yet.</p>
+            <Button variant="primary" size="sm" onClick={() => navigate('/menu')}>
+              Browse Menu & Order
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {orders.map((order) => {
+              const isPaid = order.payment_status === 'PAID';
+              return (
+                <div
+                  key={order.id}
+                  className="p-5 bg-white rounded-3xl border border-brand-border shadow-card-subtle space-y-4 hover:border-brand-black/30 transition-all"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-brand-border pb-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-heading font-extrabold text-lg text-brand-black font-mono">
+                          #{order.order_number}
+                        </span>
+                        <span
+                          className={`text-[10px] uppercase font-bold tracking-wider px-2.5 py-0.5 rounded-full ${
+                            order.status === 'PENDING'
+                              ? 'bg-amber-100 text-amber-800'
+                              : order.status === 'ACCEPTED'
+                              ? 'bg-blue-100 text-blue-800'
+                              : order.status === 'PREPARING'
+                              ? 'bg-purple-100 text-purple-800'
+                              : order.status === 'READY_FOR_PICKUP'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-gray-100 text-gray-800'
+                          }`}
+                        >
+                          {order.status.replace(/_/g, ' ')}
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            isPaid ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'
+                          }`}
+                        >
+                          {isPaid ? 'PAID' : 'PAY AT COUNTER'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-brand-muted mt-1 flex items-center gap-1.5">
+                        <Clock className="w-3 h-3" />
+                        {new Date(order.created_at).toLocaleDateString('en-IN', {
+                          day: 'numeric',
+                          month: 'short',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}{' '}
+                        • {order.order_type === 'DINING' ? `Table ${order.table_number_snapshot || 'Assigned'}` : 'Self-Pickup'}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => navigate(`/track/${order.id}`)}
+                        rightIcon={<ExternalLink className="w-3.5 h-3.5" />}
+                      >
+                        Track Status
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleReorder(order)}
+                        leftIcon={<RotateCcw className="w-3.5 h-3.5" />}
+                      >
+                        Reorder
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Items snapshot summary */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="text-brand-muted text-[11px]">
+                      {order.items?.map((it) => `${it.quantity}× ${it.item_name_snapshot}`).join(', ') || 'No item details'}
+                    </div>
+                    <span className="font-heading font-extrabold text-sm text-brand-black">
+                      ₹{order.total_amount.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

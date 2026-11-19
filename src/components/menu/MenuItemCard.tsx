@@ -103,3 +103,4 @@ export const MenuItemCard: React.FC<MenuItemCardProps> = ({ item, onSelect, onQu
     </div>
   );
 };
+

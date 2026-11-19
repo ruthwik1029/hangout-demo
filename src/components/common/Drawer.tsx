@@ -9,6 +9,7 @@ export interface DrawerProps {
   subtitle?: React.ReactNode;
   children: React.ReactNode;
   footer?: React.ReactNode;
+  maxWidth?: 'sm' | 'md' | 'lg' | 'xl' | string;
 }
 
 export const Drawer: React.FC<DrawerProps> = ({
@@ -18,6 +19,7 @@ export const Drawer: React.FC<DrawerProps> = ({
   subtitle,
   children,
   footer,
+  maxWidth = 'md',
 }) => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -53,7 +55,15 @@ export const Drawer: React.FC<DrawerProps> = ({
               animate={{ x: 0 }}
               exit={{ x: '100%' }}
               transition={{ type: 'spring', damping: 28, stiffness: 280 }}
-              className="w-screen max-w-md bg-brand-warm-white flex flex-col shadow-2xl border-l border-brand-border"
+              className={`w-screen ${
+                maxWidth === 'sm'
+                  ? 'max-w-sm'
+                  : maxWidth === 'lg'
+                  ? 'max-w-lg'
+                  : maxWidth === 'xl'
+                  ? 'max-w-xl'
+                  : 'max-w-md'
+              } bg-brand-warm-white flex flex-col shadow-2xl border-l border-brand-border`}
             >
               {/* Header */}
               <div className="p-6 border-b border-brand-border bg-white flex items-center justify-between">
@@ -90,3 +100,4 @@ export const Drawer: React.FC<DrawerProps> = ({
     </AnimatePresence>
   );
 };
+

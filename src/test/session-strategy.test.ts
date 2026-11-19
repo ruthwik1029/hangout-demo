@@ -37,3 +37,4 @@ describe('Safe Customer Registration & Session Strategy', () => {
     expect(diffDays).toBeGreaterThan(6.9);
   });
 });
+

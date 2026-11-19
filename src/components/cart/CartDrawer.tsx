@@ -28,7 +28,6 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onOpenTableSelector }) =
     closeCart,
     updateQuantity,
     removeItem,
-    clearActiveCart,
     subtotal,
     gstAmount,
     grandTotal,
@@ -41,7 +40,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onOpenTableSelector }) =
 
   const handleProceedToSummary = () => {
     closeCart();
-    navigate('/cart');
+    navigate('/checkout');
   };
 
   return (
@@ -101,10 +100,12 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onOpenTableSelector }) =
               <Button
                 variant="outline"
                 size="md"
-                onClick={clearActiveCart}
-                className="text-red-600 border-red-200 hover:bg-red-50"
+                onClick={() => {
+                  closeCart();
+                  navigate('/cart');
+                }}
               >
-                Clear
+                Cart
               </Button>
               <Button
                 variant="primary"
@@ -113,7 +114,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onOpenTableSelector }) =
                 onClick={handleProceedToSummary}
                 rightIcon={<ArrowRight className="w-4 h-4" />}
               >
-                Review Order Summary
+                Proceed to Checkout
               </Button>
             </div>
           </div>
@@ -301,3 +302,4 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onOpenTableSelector }) =
     </Drawer>
   );
 };
+

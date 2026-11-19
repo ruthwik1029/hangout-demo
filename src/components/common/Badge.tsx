@@ -77,3 +77,4 @@ export const SpecialBadge: React.FC<{ label?: string }> = ({ label = "Today's Sp
     </span>
   );
 };
+

@@ -155,3 +155,4 @@ INSERT INTO public.customers (
     3,
     1840.00
 ) ON CONFLICT (id) DO NOTHING;
+

@@ -87,3 +87,4 @@ export const MenuFilterBar: React.FC<MenuFilterBarProps> = ({
     </div>
   );
 };
+

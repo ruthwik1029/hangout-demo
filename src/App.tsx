@@ -23,9 +23,15 @@ import { HomePage } from './pages/HomePage';
 import { MenuPage } from './pages/MenuPage';
 import { TableEntryPage } from './pages/TableEntryPage';
 import { CartPage } from './pages/CartPage';
+import { CheckoutPage } from './pages/CheckoutPage';
+import { OrderConfirmationPage } from './pages/OrderConfirmationPage';
+import { OrderTrackingPage } from './pages/OrderTrackingPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { PortalLogin } from './pages/auth/PortalLogin';
 import { AdminDashboard } from './pages/admin/AdminDashboard';
+import { AdminMenuPage } from './pages/admin/AdminMenuPage';
+import { AdminOrdersPage } from './pages/admin/AdminOrdersPage';
+import { AdminCustomersPage } from './pages/admin/AdminCustomersPage';
 import { AdminSettings } from './pages/admin/AdminSettings';
 import { StaffPortal } from './pages/staff/StaffPortal';
 import { KitchenPortal } from './pages/kitchen/KitchenPortal';
@@ -108,6 +114,9 @@ const AppLayout: React.FC = () => {
               <CartPage onOpenTableSelector={() => setIsTableModalOpen(true)} />
             }
           />
+          <Route path="/checkout" element={<CheckoutPage />} />
+          <Route path="/order-confirmation/:orderId" element={<OrderConfirmationPage />} />
+          <Route path="/track/:orderId" element={<OrderTrackingPage />} />
           <Route path="/profile" element={<ProfilePage />} />
 
           {/* Internal Portals & Auth */}
@@ -117,6 +126,30 @@ const AppLayout: React.FC = () => {
             element={
               <ProtectedRoute allowedRoles={['admin']}>
                 <AdminDashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/menu"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminMenuPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/orders"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminOrdersPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/customers"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminCustomersPage />
               </ProtectedRoute>
             }
           />

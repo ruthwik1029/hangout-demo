@@ -90,3 +90,4 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({ onOpenProfile 
     </div>
   );
 };
+

@@ -322,3 +322,4 @@ CREATE OR REPLACE TRIGGER trg_menu_items_updated
 CREATE OR REPLACE TRIGGER trg_customers_updated
     BEFORE UPDATE ON public.customers
     FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
