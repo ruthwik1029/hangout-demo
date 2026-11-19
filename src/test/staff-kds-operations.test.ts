@@ -18,11 +18,128 @@ import {
   assertStaffPermission,
   roundMoney,
 } from '../lib/supabase';
+import { INITIAL_TABLES } from '../lib/mockData';
+import { Order } from '../types';
 import { publishRealtimeEvent, subscribeToRealtimeEvents, RealtimeOpsEvent } from '../lib/realtime';
 
 describe('Staff & Waiter Operations, KDS & Bill Splitting (Batch 03)', () => {
   beforeEach(() => {
     localStorage.clear();
+
+    // Seed test fixture orders and table states for staff & KDS operational tests
+    const testOrders: Order[] = [
+      {
+        id: 'ord-0003',
+        order_number: 'HG-2026-00003',
+        order_type: 'DINING',
+        order_status: 'PENDING',
+        status: 'PENDING',
+        payment_status: 'UNPAID',
+        payment_method: 'PAY_AFTER_MEAL',
+        table_id: 'b0000000-0000-0000-0000-000000000002',
+        table_number_snapshot: 'T-02',
+        subtotal: 420.0,
+        discount_amount: 0,
+        tax_amount: 21.0,
+        total_amount: 441.0,
+        items: [
+          {
+            id: 'oi-0005',
+            order_id: 'ord-0003',
+            menu_item_id: 'd0000000-0000-0000-0000-000000000004',
+            item_name_snapshot: 'Classic Chicken Shawarma (No Salad / All-Meat)',
+            unit_price_snapshot: 190.0,
+            quantity: 2,
+            total_price: 380.0,
+            item_status: 'QUEUED',
+            status: 'QUEUED',
+            station_code: 'SHAWARMA',
+            tax_rate_snapshot: 5.0,
+            created_at: new Date().toISOString(),
+          },
+        ],
+        created_at: new Date().toISOString(),
+      },
+      {
+        id: 'ord-0004',
+        order_number: 'HG-2026-00004',
+        order_type: 'DINING',
+        order_status: 'PREPARING',
+        status: 'PREPARING',
+        payment_status: 'UNPAID',
+        payment_method: 'PAY_AFTER_MEAL',
+        table_id: 'b0000000-0000-0000-0000-000000000004',
+        table_number_snapshot: 'T-04',
+        subtotal: 840.0,
+        discount_amount: 0,
+        tax_amount: 42.0,
+        total_amount: 882.0,
+        items: [
+          {
+            id: 'oi-0006',
+            order_id: 'ord-0004',
+            menu_item_id: 'd0000000-0000-0000-0000-000000000001',
+            item_name_snapshot: 'Classic Chicken Shawarma (With Salad)',
+            unit_price_snapshot: 240.0,
+            quantity: 1,
+            total_price: 240.0,
+            item_status: 'READY',
+            status: 'READY',
+            station_code: 'SHAWARMA',
+            tax_rate_snapshot: 5.0,
+            created_at: new Date().toISOString(),
+          },
+          {
+            id: 'oi-0007',
+            order_id: 'ord-0004',
+            menu_item_id: 'd0000000-0000-0000-0000-000000000007',
+            item_name_snapshot: 'Classic Chicken Murtabak',
+            unit_price_snapshot: 340.0,
+            quantity: 1,
+            total_price: 340.0,
+            item_status: 'PREPARATION_COMPLETED',
+            status: 'PREPARATION_COMPLETED',
+            station_code: 'MURTABAK',
+            tax_rate_snapshot: 5.0,
+            created_at: new Date().toISOString(),
+          },
+          {
+            id: 'oi-0008',
+            order_id: 'ord-0004',
+            menu_item_id: 'd0000000-0000-0000-0000-000000000010',
+            item_name_snapshot: 'Crispy Peri-Peri Chicken Strips',
+            unit_price_snapshot: 260.0,
+            quantity: 1,
+            total_price: 260.0,
+            item_status: 'PREPARING',
+            status: 'PREPARING',
+            station_code: 'STARTERS',
+            tax_rate_snapshot: 5.0,
+            created_at: new Date().toISOString(),
+          },
+        ],
+        created_at: new Date().toISOString(),
+      },
+    ];
+    localStorage.setItem('hangout_orders_store', JSON.stringify(testOrders));
+
+    // Also seed tables with T-02 and T-04 linked to these orders
+    const tables = JSON.parse(JSON.stringify(INITIAL_TABLES));
+    const t2 = tables.find((t: any) => t.table_number === 'T-02');
+    if (t2) {
+      t2.status = 'occupied';
+      t2.guest_count = 2;
+      t2.active_order_id = 'ord-0003';
+      t2.current_bill_amount = 441.0;
+    }
+    const t4 = tables.find((t: any) => t.table_number === 'T-04');
+    if (t4) {
+      t4.status = 'occupied';
+      t4.guest_count = 4;
+      t4.active_order_id = 'ord-0004';
+      t4.current_bill_amount = 882.0;
+    }
+    localStorage.setItem('hangout_tables_store', JSON.stringify(tables));
   });
 
   // ==========================================================================
@@ -36,12 +153,13 @@ describe('Staff & Waiter Operations, KDS & Bill Splitting (Batch 03)', () => {
       expect(() => assertStaffPermission('admin', 'PREPARE_FOOD')).not.toThrow();
       expect(() => assertStaffPermission('admin', 'MANAGE_SETTINGS')).not.toThrow();
 
-      // 2. Waiter has floor permissions, but cannot edit settings or prepare food
+      // 2. Waiter (Staff) has floor and kitchen preparation permissions, but cannot edit settings or menu
       expect(() => assertStaffPermission('waiter', 'MANAGE_TABLES')).not.toThrow();
       expect(() => assertStaffPermission('waiter', 'APPROVE_ORDERS')).not.toThrow();
       expect(() => assertStaffPermission('waiter', 'CREATE_ORDERS')).not.toThrow();
-      expect(() => assertStaffPermission('waiter', 'PREPARE_FOOD')).toThrow(/Unauthorized/);
+      expect(() => assertStaffPermission('waiter', 'PREPARE_FOOD')).not.toThrow();
       expect(() => assertStaffPermission('waiter', 'MANAGE_SETTINGS')).toThrow(/Unauthorized/);
+      expect(() => assertStaffPermission('waiter', 'EDIT_MENU')).toThrow(/Unauthorized/);
 
       // 3. Kitchen staff can only prepare food
       expect(() => assertStaffPermission('kitchen', 'PREPARE_FOOD')).not.toThrow();
@@ -151,18 +269,18 @@ describe('Staff & Waiter Operations, KDS & Bill Splitting (Batch 03)', () => {
         tableId: table3.id,
         guestCount: 2,
         waiterId: 'u-waiter-01',
-        waiterName: 'Rahul Verma',
-        customerName: 'Ananya Walkin',
+        waiterName: 'Floor Staff',
+        customerName: 'Dine-in Guest',
         items: [
           {
-            menuItemId: 'd0000000-0000-0000-0000-000000000001', // Iced Spanish Latte (240 base)
-            variantName: 'Large (400ml)', // +50
+            menuItemId: 'd0000000-0000-0000-0000-000000000001', // Classic Chicken Shawarma (160 base)
+            variantName: 'Jumbo - Rumali Roti', // +50
             quantity: 2,
           },
           {
-            menuItemId: 'd0000000-0000-0000-0000-000000000010', // Smash Burger (420)
+            menuItemId: 'd0000000-0000-0000-0000-000000000010', // Crispy Peri-Peri Chicken Strips (220)
             quantity: 1,
-            specialInstructions: 'Well done',
+            specialInstructions: 'Extra spicy',
           },
         ],
       });
@@ -172,18 +290,18 @@ describe('Staff & Waiter Operations, KDS & Bill Splitting (Batch 03)', () => {
       expect(order.table_number_snapshot).toBe('T-03');
       expect(order.payment_status).toBe('UNPAID');
 
-      // Subtotal: (240 + 50)*2 + 420 = 580 + 420 = 1000
-      expect(order.subtotal).toBe(1000);
-      // 5% GST = 50 (CGST 25, SGST 25)
-      expect(order.tax_amount).toBe(50);
-      expect(order.total_amount).toBe(1050);
+      // Subtotal: (160 + 50)*2 + 220 = 420 + 220 = 640
+      expect(order.subtotal).toBe(640);
+      // 5% GST = 32 (CGST 16, SGST 16)
+      expect(order.tax_amount).toBe(32);
+      expect(order.total_amount).toBe(672);
 
       // Station routing verification
-      const latteItem = order.items?.find((i) => i.item_name_snapshot === 'Iced Spanish Latte');
-      expect(latteItem?.station_code).toBe('BEVERAGE');
+      const shawarmaItem = order.items?.find((i) => i.item_name_snapshot.includes('Classic Chicken Shawarma'));
+      expect(shawarmaItem?.station_code).toBe('SHAWARMA');
 
-      const burgerItem = order.items?.find((i) => i.item_name_snapshot.includes('Smash Burger'));
-      expect(burgerItem?.station_code).toBe('MAIN_KITCHEN');
+      const starterItem = order.items?.find((i) => i.item_name_snapshot.includes('Chicken Strips'));
+      expect(starterItem?.station_code).toBe('STARTERS');
     });
 
     it('allows a waiter to add additional items to an active running dining tab', async () => {
@@ -195,7 +313,7 @@ describe('Staff & Waiter Operations, KDS & Bill Splitting (Batch 03)', () => {
         tableId: table7.id,
         guestCount: 2,
         waiterId: 'u-waiter-01',
-        waiterName: 'Rahul Verma',
+        waiterName: 'Floor Staff',
         items: [
           {
             menuItemId: 'd0000000-0000-0000-0000-000000000001',
@@ -206,20 +324,20 @@ describe('Staff & Waiter Operations, KDS & Bill Splitting (Batch 03)', () => {
 
       const initialSubtotal = initialOrder.subtotal;
 
-      // Add cheesecake (280)
+      // Add Chicken Murtabak (220)
       const updatedOrder = await addItemsToExistingOrder(
         initialOrder.id,
         [
           {
-            menuItemId: 'd0000000-0000-0000-0000-000000000015', // Basque Burnt Cheesecake
+            menuItemId: 'd0000000-0000-0000-0000-000000000007', // Classic Chicken Murtabak
             quantity: 1,
           },
         ],
-        'Rahul Verma'
+        'Floor Staff'
       );
 
       expect(updatedOrder.items?.length).toBe(2);
-      expect(updatedOrder.subtotal).toBe(initialSubtotal + 280);
+      expect(updatedOrder.subtotal).toBe(initialSubtotal + 220);
       expect(updatedOrder.total_amount).toBeGreaterThan(initialOrder.total_amount);
     });
   });
@@ -233,10 +351,10 @@ describe('Staff & Waiter Operations, KDS & Bill Splitting (Batch 03)', () => {
       expect(stations.length).toBeGreaterThanOrEqual(4);
 
       const codes = stations.map((s) => s.code);
-      expect(codes).toContain('MAIN_KITCHEN');
-      expect(codes).toContain('BEVERAGE');
-      expect(codes).toContain('BAKERY');
-      expect(codes).toContain('DESSERT');
+      expect(codes).toContain('SHAWARMA');
+      expect(codes).toContain('MURTABAK');
+      expect(codes).toContain('STARTERS');
+      expect(codes).toContain('DISPATCH');
     });
 
     it('correctly tracks item-level preparation states and aggregates parent order status', async () => {

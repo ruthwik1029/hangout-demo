@@ -29,7 +29,7 @@ describe('Separate Dining and Takeaway Carts Architecture', () => {
       { wrapper }
     );
 
-    const testItem = INITIAL_MENU_ITEMS[0]; // Iced Spanish Latte (₹240)
+    const testItem = INITIAL_MENU_ITEMS[0]; // Classic Chicken Shawarma (₹160)
 
     // 1. Initially both carts are empty
     expect(result.current.cart.diningItemCount).toBe(0);
@@ -47,7 +47,7 @@ describe('Separate Dining and Takeaway Carts Architecture', () => {
     // Dining cart must have 2 items, takeaway cart must have 0 items!
     expect(result.current.cart.diningItemCount).toBe(2);
     expect(result.current.cart.takeawayItemCount).toBe(0);
-    expect(result.current.cart.subtotal).toBe(480);
+    expect(result.current.cart.subtotal).toBe(320);
 
     // 3. Switch mode to takeaway
     act(() => {
@@ -60,16 +60,16 @@ describe('Separate Dining and Takeaway Carts Architecture', () => {
     expect(result.current.cart.diningItemCount).toBe(2); // Dining cart items are preserved safely!
 
     // 4. Add an item to takeaway cart
-    const burgerItem = INITIAL_MENU_ITEMS[9]; // The Hangout Signature Smash Burger (₹420)
+    const starterItem = INITIAL_MENU_ITEMS[9]; // Crispy Peri-Peri Chicken Strips (₹220)
     act(() => {
-      result.current.cart.addItem(burgerItem, 1);
+      result.current.cart.addItem(starterItem, 1);
     });
 
     expect(result.current.cart.takeawayItemCount).toBe(1);
     expect(result.current.cart.diningItemCount).toBe(2);
-    expect(result.current.cart.subtotal).toBe(420);
-    expect(result.current.cart.gstAmount).toBe(21); // 5% of 420
-    expect(result.current.cart.grandTotal).toBe(441);
+    expect(result.current.cart.subtotal).toBe(220);
+    expect(result.current.cart.gstAmount).toBe(11); // 5% of 220
+    expect(result.current.cart.grandTotal).toBe(231);
   });
 });
 

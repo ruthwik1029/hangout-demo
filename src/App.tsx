@@ -29,10 +29,17 @@ import { OrderTrackingPage } from './pages/OrderTrackingPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { PortalLogin } from './pages/auth/PortalLogin';
 import { AdminDashboard } from './pages/admin/AdminDashboard';
+import { AdminAnalyticsPage } from './pages/admin/AdminAnalyticsPage';
 import { AdminMenuPage } from './pages/admin/AdminMenuPage';
 import { AdminOrdersPage } from './pages/admin/AdminOrdersPage';
 import { AdminCustomersPage } from './pages/admin/AdminCustomersPage';
+import { AdminWebsitePage } from './pages/admin/AdminWebsitePage';
+import { AdminPromotionsPage } from './pages/admin/AdminPromotionsPage';
+import { AdminQRPage } from './pages/admin/AdminQRPage';
+import { AdminStaffPage } from './pages/admin/AdminStaffPage';
+import { AdminBillingPage } from './pages/admin/AdminBillingPage';
 import { AdminSettings } from './pages/admin/AdminSettings';
+import { AdminActivityPage } from './pages/admin/AdminActivityPage';
 import { StaffPortal } from './pages/staff/StaffPortal';
 import { KitchenPortal } from './pages/kitchen/KitchenPortal';
 import { ProtectedRoute } from './routes/ProtectedRoute';
@@ -130,6 +137,14 @@ const AppLayout: React.FC = () => {
             }
           />
           <Route
+            path="/admin/analytics"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminAnalyticsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/admin/menu"
             element={
               <ProtectedRoute allowedRoles={['admin']}>
@@ -154,6 +169,46 @@ const AppLayout: React.FC = () => {
             }
           />
           <Route
+            path="/admin/website"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminWebsitePage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/promotions"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminPromotionsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/qr"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminQRPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/staff"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminStaffPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/billing"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminBillingPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/admin/settings"
             element={
               <ProtectedRoute allowedRoles={['admin']}>
@@ -162,9 +217,17 @@ const AppLayout: React.FC = () => {
             }
           />
           <Route
+            path="/admin/activity"
+            element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminActivityPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/staff"
             element={
-              <ProtectedRoute allowedRoles={['waiter', 'manager', 'admin']}>
+              <ProtectedRoute allowedRoles={['waiter', 'manager', 'cashier', 'admin']}>
                 <StaffPortal />
               </ProtectedRoute>
             }
@@ -172,7 +235,7 @@ const AppLayout: React.FC = () => {
           <Route
             path="/kitchen"
             element={
-              <ProtectedRoute allowedRoles={['kitchen', 'admin']}>
+              <ProtectedRoute allowedRoles={['waiter', 'manager', 'admin', 'kitchen']}>
                 <KitchenPortal />
               </ProtectedRoute>
             }

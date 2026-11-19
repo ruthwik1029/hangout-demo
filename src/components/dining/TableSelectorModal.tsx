@@ -28,7 +28,7 @@ export const TableSelectorModal: React.FC<TableSelectorModalProps> = ({ isOpen, 
       isOpen={isOpen}
       onClose={onClose}
       title="Select Dining Table"
-      subtitle="Choose your table in the cafe or simulate scanning a table QR code."
+      subtitle="Choose your table or simulate scanning a table QR code."
       maxWidth="lg"
     >
       <div className="space-y-4">
@@ -61,7 +61,7 @@ export const TableSelectorModal: React.FC<TableSelectorModalProps> = ({ isOpen, 
         {/* Available Tables Grid */}
         <div>
           <label className="block text-xs font-bold uppercase tracking-wider text-brand-muted mb-2">
-            Available Cafe Tables
+            Available Dining Tables
           </label>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 max-h-60 overflow-y-auto p-1">
             {availableTables.map((t) => {
@@ -108,7 +108,7 @@ export const TableSelectorModal: React.FC<TableSelectorModalProps> = ({ isOpen, 
         <div className="bg-brand-charcoal text-white p-3.5 rounded-2xl flex items-center gap-3 text-xs">
           <QrCode className="w-5 h-5 text-brand-yellow shrink-0" />
           <div className="flex-1">
-            <span className="text-brand-yellow font-semibold">QR Code Demo:</span> In real usage, scanning a table sticker opens <code className="bg-black/50 px-1 py-0.5 rounded text-amber-200">hangout.cafe/table/T-04</code> which locks the table context automatically.
+            <span className="text-brand-yellow font-semibold">QR Code Demo:</span> In real usage, scanning a table sticker opens <code className="bg-black/50 px-1 py-0.5 rounded text-amber-200">hangout.in/table/T-04</code> which locks the table context automatically.
           </div>
         </div>
 

@@ -17,8 +17,7 @@ export const PortalLogin: React.FC = () => {
     if (state?.from?.pathname) {
       navigate(state.from.pathname);
     } else {
-      if (role === 'admin') navigate('/admin');
-      else if (role === 'kitchen') navigate('/kitchen');
+      if (role === 'admin' || role === 'manager') navigate('/admin');
       else navigate('/staff');
     }
   };
@@ -41,7 +40,7 @@ export const PortalLogin: React.FC = () => {
           Internal Portals & Roles
         </h1>
         <p className="text-xs sm:text-sm text-brand-muted max-w-md mx-auto">
-          HANGOUT role-based authorization foundation. Select a persona to test access permissions for Admin, Staff/Waiter, or Kitchen.
+          HANGOUT role-based authorization foundation. Select a persona to test access permissions for Admin, Manager, Cashier, or Staff.
         </p>
       </div>
 
@@ -89,14 +88,14 @@ export const PortalLogin: React.FC = () => {
                     className={`text-[10px] font-heading font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-full ${
                       user.role_id === 'admin'
                         ? 'bg-purple-100 text-purple-900'
-                        : user.role_id === 'kitchen'
-                        ? 'bg-amber-100 text-amber-900'
                         : user.role_id === 'manager'
                         ? 'bg-blue-100 text-blue-900'
+                        : user.role_id === 'cashier'
+                        ? 'bg-teal-100 text-teal-900'
                         : 'bg-emerald-100 text-emerald-900'
                     }`}
                   >
-                    Role: {user.role_id}
+                    Role: {user.role_id === 'waiter' ? 'staff' : user.role_id}
                   </span>
                   {isActive && (
                     <span className="flex items-center gap-1 text-[11px] font-bold text-brand-black">
@@ -109,10 +108,10 @@ export const PortalLogin: React.FC = () => {
                 <p className="text-xs text-brand-muted mb-4">{user.email}</p>
 
                 <p className="text-xs text-brand-charcoal/80 mb-4 font-sans">
-                  {user.role_id === 'admin' && 'Full system control, cafe settings, GST rates & menu management.'}
-                  {user.role_id === 'manager' && 'Cafe operational management, reporting & order tracking.'}
-                  {user.role_id === 'waiter' && 'Table service, floor status & customer order coordination.'}
-                  {user.role_id === 'kitchen' && 'Kitchen Display System (KDS), cooking queue & item preparation.'}
+                  {user.role_id === 'admin' && 'Full system control, restaurant settings, GST rates & menu management.'}
+                  {user.role_id === 'manager' && 'Restaurant operations, reporting & order oversight.'}
+                  {user.role_id === 'cashier' && 'Counter billing, payment collection & cash settlements.'}
+                  {user.role_id === 'waiter' && 'Table service, floor status, customer order coordination & KDS kitchen operations.'}
                 </p>
               </div>
 
@@ -120,10 +119,8 @@ export const PortalLogin: React.FC = () => {
                 <span className="text-[11px] text-brand-muted">
                   Path:{' '}
                   <code className="text-brand-black font-semibold">
-                    {user.role_id === 'admin'
+                    {user.role_id === 'admin' || user.role_id === 'manager'
                       ? '/admin'
-                      : user.role_id === 'kitchen'
-                      ? '/kitchen'
                       : '/staff'}
                   </code>
                 </span>

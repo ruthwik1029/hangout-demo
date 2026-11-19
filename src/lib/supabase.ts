@@ -30,6 +30,8 @@ import {
   BillSplitType,
   StaffAuditLog,
   UserRole,
+  UserProfile,
+  AdminActivityLog,
 } from '../types';
 import {
   INITIAL_CAFE_SETTINGS,
@@ -41,7 +43,10 @@ import {
   INITIAL_DISCOUNTS,
   INITIAL_PICKUP_SETTINGS,
   INITIAL_ORDERS,
+  INITIAL_CUSTOMERS,
   INITIAL_KITCHEN_STATIONS,
+  DEMO_PROFILES,
+  INITIAL_ADMIN_ACTIVITY,
 } from './mockData';
 import { publishRealtimeEvent } from './realtime';
 
@@ -188,10 +193,32 @@ const LOCAL_STORAGE_TABLES = 'hangout_tables_store';
 const LOCAL_STORAGE_KITCHEN_STATIONS = 'hangout_stations_store';
 const LOCAL_STORAGE_BILL_SPLITS = 'hangout_bill_splits_store';
 const LOCAL_STORAGE_STAFF_AUDIT_LOGS = 'hangout_staff_audit_logs_store';
+const LOCAL_STORAGE_STAFF_PROFILES = 'hangout_staff_profiles_store';
+const LOCAL_STORAGE_ADMIN_ACTIVITY = 'hangout_admin_activity_store';
 
 // Decimal-safe rounding helper
 export function roundMoney(amount: number): number {
   return Math.round((amount + Number.EPSILON) * 100) / 100;
+}
+
+export function generateUUIDv4(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+export function generateGuestToken(): string {
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  return 'gat_' + Math.random().toString(36).substring(2) + Date.now().toString(36);
 }
 
 // Helper for local mock storage
@@ -513,8 +540,8 @@ export async function saveCategory(category: Partial<MenuCategory> & { name: str
     slug,
     description: category.description || '',
     display_order: category.display_order ?? categories.length + 1,
-    icon_name: category.icon_name || 'Coffee',
-    image_url: category.image_url || 'https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=600&q=80',
+    icon_name: category.icon_name || 'Utensils',
+    image_url: category.image_url || '/images/food/cat-shawarma-with-salad.jpg',
     is_active: category.is_active ?? true,
   };
 
@@ -627,7 +654,7 @@ export async function saveMenuItem(
     description: item.description || '',
     base_price: priceVal,
     price: priceVal,
-    image_url: item.image_url || 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&w=600&q=80',
+    image_url: item.image_url || '/images/food/item-01-classic-shawarma-salad.jpg',
     is_veg: item.is_veg ?? true,
     is_available: item.is_available ?? true,
     is_featured: item.is_featured ?? false,
@@ -916,47 +943,38 @@ export async function registerOrFindCustomer(
           .select()
           .single();
         return (updated as Customer) || (existing as Customer);
-      }
+      } else if (!searchErr) {
+        const { data: created, error: insertErr } = await supabase
+          .from('customers')
+          .insert({
+            full_name: cleanName,
+            mobile_number: cleanMobile,
+            email: cleanEmail,
+          })
+          .select()
+          .single();
 
-      const { data: created, error: insertErr } = await supabase
-        .from('customers')
-        .insert({
-          full_name: cleanName,
-          mobile_number: cleanMobile,
-          email: cleanEmail,
-        })
-        .select()
-        .single();
-
-      if (!insertErr && created) {
-        return created as Customer;
+        if (!insertErr && created) {
+          return created as Customer;
+        }
       }
-    } catch (e) {
-      console.warn('Supabase registerOrFindCustomer failed, falling back to local:', e);
+    } catch {
+      // Direct table access may be blocked by RLS for anonymous users; safely fall back to local store
     }
   }
 
-  const customers = getLocalStore<Customer[]>(LOCAL_STORAGE_CUSTOMERS, [
-    {
-      id: 'e0000000-0000-0000-0000-000000000001',
-      full_name: 'Aarav Sharma',
-      mobile_number: '9876543210',
-      email: 'aarav.sharma@example.com',
-      total_orders: 3,
-      total_spent: 1840,
-      last_visit_at: new Date().toISOString(),
-      created_at: new Date().toISOString(),
-    },
-  ]);
+  const customers = getLocalStore<Customer[]>(LOCAL_STORAGE_CUSTOMERS, INITIAL_CUSTOMERS);
 
   const existingIdx = customers.findIndex((c) => c.mobile_number === cleanMobile);
   if (existingIdx >= 0) {
     const existing = customers[existingIdx];
     const updated: Customer = {
       ...existing,
-      full_name: cleanName,
+      full_name: cleanName || existing.full_name,
       email: cleanEmail || existing.email,
       last_visit_at: new Date().toISOString(),
+      last_login_at: new Date().toISOString(),
+      status: existing.status || 'ACTIVE',
     };
     customers[existingIdx] = updated;
     setLocalStore(LOCAL_STORAGE_CUSTOMERS, customers);
@@ -964,14 +982,16 @@ export async function registerOrFindCustomer(
   }
 
   const newCustomer: Customer = {
-    id: 'cust_' + Date.now().toString(36),
+    id: generateUUIDv4(),
     full_name: cleanName,
     mobile_number: cleanMobile,
     email: cleanEmail,
     total_orders: 0,
     total_spent: 0,
     last_visit_at: new Date().toISOString(),
+    last_login_at: new Date().toISOString(),
     created_at: new Date().toISOString(),
+    status: 'NEW REGISTERED',
   };
 
   customers.push(newCustomer);
@@ -1064,7 +1084,7 @@ export async function createOrder(
   paramOrOrderData: CreateOrderParams | Omit<Order, 'id' | 'order_number' | 'created_at' | 'updated_at'>,
   itemsDataArg?: Omit<OrderItem, 'id' | 'order_id' | 'created_at'>[]
 ): Promise<Order> {
-  const newOrderId = 'ord_' + Date.now().toString(36);
+  const newOrderId = generateUUIDv4();
   const orderNumber = generateOrderNumber();
   const timestamp = new Date().toISOString();
 
@@ -1115,70 +1135,128 @@ export async function createOrder(
       tax_rate_snapshot: 5.0,
     }));
   } else {
+    const raw = paramOrOrderData as any;
     orderData = {
-      ...paramOrOrderData,
-      status: paramOrOrderData.status || paramOrOrderData.order_status || 'PENDING',
-      order_status: paramOrOrderData.order_status || paramOrOrderData.status || 'PENDING',
+      ...raw,
+      customer_id: raw.customer_id || raw.customerId || null,
+      customer_name_snapshot: raw.customer_name_snapshot || raw.customerName || '',
+      customer_mobile_snapshot: raw.customer_mobile_snapshot || raw.customerMobile || '',
+      customer_email_snapshot: raw.customer_email_snapshot || raw.customerEmail || null,
+      order_type: raw.order_type || raw.orderType || 'DINING',
+      subtotal: raw.subtotal || 0,
+      discount_amount: raw.discount_amount ?? raw.discountAmount ?? 0,
+      tax_amount: raw.tax_amount ?? raw.taxAmount ?? 0,
+      total_amount: raw.total_amount ?? raw.totalAmount ?? 0,
+      payment_method: raw.payment_method || raw.paymentMethod || 'UPI',
+      payment_status: raw.payment_status || raw.paymentStatus || 'PENDING',
+      status: raw.status || raw.order_status || raw.orderStatus || 'PENDING',
+      order_status: raw.order_status || raw.status || raw.orderStatus || 'PENDING',
     };
-    itemsData = itemsDataArg || [];
+    itemsData = itemsDataArg || raw.items || [];
   }
 
   const createdOrder: Order = {
     ...orderData,
     id: newOrderId,
     order_number: orderNumber,
+    guest_access_token: generateGuestToken(),
     created_at: timestamp,
     updated_at: timestamp,
-    items: itemsData.map((item, idx) => ({
+    items: itemsData.map((item: any, idx) => ({
       ...item,
-      id: `oi_${Date.now().toString(36)}_${idx}`,
+      id: item.id || `oi_${Date.now().toString(36)}_${idx}`,
       order_id: newOrderId,
+      menu_item_id: item.menu_item_id || item.menuItemId || '',
+      item_name_snapshot: item.item_name_snapshot || item.name || 'Item',
+      unit_price_snapshot: item.unit_price_snapshot ?? item.unitPrice ?? 0,
+      quantity: item.quantity || 1,
+      total_price: item.total_price ?? item.totalPrice ?? (item.unit_price_snapshot ?? item.unitPrice ?? 0) * (item.quantity || 1),
+      status: item.status || item.item_status || 'QUEUED',
+      item_status: item.item_status || item.status || 'QUEUED',
       created_at: timestamp,
     })),
   };
 
   if (isSupabaseConfigured()) {
-    const { data: dbOrder, error: orderErr } = await supabase
-      .from('orders')
-      .insert({
-        id: newOrderId,
-        order_number: orderNumber,
-        customer_id: orderData.customer_id,
-        customer_name_snapshot: orderData.customer_name_snapshot,
-        customer_mobile_snapshot: orderData.customer_mobile_snapshot,
-        customer_email_snapshot: orderData.customer_email_snapshot,
-        order_type: orderData.order_type,
-        table_id: orderData.table_id,
-        table_number_snapshot: orderData.table_number_snapshot,
-        pickup_time_slot: orderData.pickup_time_slot,
-        pickup_notes: orderData.pickup_notes,
-        subtotal: orderData.subtotal,
-        discount_amount: orderData.discount_amount,
-        discount_code: orderData.discount_code,
-        tax_amount: orderData.tax_amount,
-        tax_breakdown: orderData.tax_breakdown,
-        total_amount: orderData.total_amount,
-        payment_method: orderData.payment_method,
-        payment_status: orderData.payment_status,
-        order_status: orderData.order_status,
-        special_instructions: orderData.special_instructions,
-      })
-      .select()
-      .single();
+    const rawMobile = (orderData.customer_mobile_snapshot || '').replace(/\D/g, '');
+    const cleanMobile = rawMobile.length === 12 && rawMobile.startsWith('91')
+      ? rawMobile.slice(2)
+      : rawMobile.slice(-10);
 
-    if (orderErr) {
-      console.error('Supabase createOrder error:', orderErr);
-      throw new Error(`Failed to create order in Supabase: ${orderErr.message}`);
+    const orderPayload = {
+      order_type: ((orderData.order_type as string) === 'DINING' || (orderData.order_type as string) === 'DINE_IN') ? 'DINING' : 'TAKEAWAY',
+      table_id: orderData.table_id || null,
+      table_number: orderData.table_number_snapshot || null,
+      pickup_time_slot: orderData.pickup_time_slot || orderData.pickup_slot_snapshot || 'ASAP Pickup',
+      pickup_slot_snapshot: orderData.pickup_slot_snapshot || orderData.pickup_time_slot || 'ASAP Pickup',
+      pickup_notes: orderData.pickup_notes || null,
+      customer_name_snapshot: orderData.customer_name_snapshot || 'Guest Customer',
+      customer_mobile_snapshot: cleanMobile,
+      customer_email_snapshot: orderData.customer_email_snapshot || null,
+      payment_method: orderData.payment_method === 'CARD'
+        ? 'CARD_DEMO'
+        : orderData.payment_method === 'UPI'
+        ? 'UPI_DEMO'
+        : orderData.payment_method,
+      discount_code: orderData.discount_code || null,
+      special_instructions: orderData.special_instructions || null,
+    };
+
+    const itemsPayload = itemsData.map((item: any) => ({
+      menu_item_id: item.menu_item_id || item.menuItemId,
+      item_name: item.item_name_snapshot || item.name || 'Item',
+      quantity: item.quantity || 1,
+      variant_id: item.variant_id || item.variantSnapshot?.id || null,
+      variant_name: item.variant_name_snapshot || item.variantSnapshot?.name || null,
+      selected_addons: item.selected_addons || item.addons_snapshot || item.selectedAddons || [],
+      special_instructions: item.special_instructions || null,
+    }));
+
+    const { data: rpcResult, error: rpcErr } = await supabase.rpc('place_order', {
+      order_payload: orderPayload,
+      items_payload: itemsPayload,
+    });
+
+    if (rpcErr) {
+      console.error('Supabase place_order RPC error:', rpcErr);
+      throw new Error(`Failed to create order in Supabase: ${rpcErr.message}`);
     }
 
-    if (dbOrder && createdOrder.items && createdOrder.items.length > 0) {
-      const { error: itemsErr } = await supabase.from('order_items').insert(createdOrder.items);
-      if (itemsErr) {
-        console.error('Supabase createOrder items error:', itemsErr);
-        throw new Error(`Failed to insert order items in Supabase: ${itemsErr.message}`);
+    if (rpcResult && rpcResult.success) {
+      createdOrder.id = rpcResult.order_id;
+      createdOrder.order_number = rpcResult.order_number;
+      createdOrder.guest_access_token = rpcResult.guest_access_token;
+      if (rpcResult.customer_id) {
+        createdOrder.customer_id = rpcResult.customer_id;
+      }
+      if (rpcResult.pickup_slot_snapshot) {
+        createdOrder.pickup_slot_snapshot = rpcResult.pickup_slot_snapshot;
+      }
+      if (rpcResult.pickup_time_slot) {
+        createdOrder.pickup_time_slot = rpcResult.pickup_time_slot;
+      }
+      if (rpcResult.subtotal !== undefined) createdOrder.subtotal = rpcResult.subtotal;
+      if (rpcResult.discount_amount !== undefined) createdOrder.discount_amount = rpcResult.discount_amount;
+      if (rpcResult.tax_amount !== undefined) createdOrder.tax_amount = rpcResult.tax_amount;
+      if (rpcResult.total_amount !== undefined) createdOrder.total_amount = rpcResult.total_amount;
+      createdOrder.payment_status = (rpcResult.payment_status as PaymentStatus) || 'UNPAID';
+      createdOrder.order_status = (rpcResult.order_status as OrderStatus) || 'PENDING';
+      createdOrder.status = createdOrder.order_status;
+
+      // Update items with real order_id
+      if (createdOrder.items) {
+        createdOrder.items = createdOrder.items.map((it) => ({
+          ...it,
+          order_id: rpcResult.order_id,
+        }));
+      }
+
+      // Cache guest token in localStorage for subsequent tracking and payment calls
+      if (typeof localStorage !== 'undefined' && rpcResult.guest_access_token) {
+        localStorage.setItem(`hangout_guest_token_${rpcResult.order_id}`, rpcResult.guest_access_token);
+        localStorage.setItem(`hangout_guest_token_${rpcResult.order_number}`, rpcResult.guest_access_token);
       }
     }
-    return createdOrder;
   }
 
   // Save to local store
@@ -1186,20 +1264,43 @@ export async function createOrder(
   orders.unshift(createdOrder);
   setLocalStore(LOCAL_STORAGE_ORDERS, orders);
 
-  // Update customer order count and spending stats
+  // Update customer order count and spending stats, or register guest customer
   if (orderData.customer_id || orderData.customer_mobile_snapshot) {
-    const customers = getLocalStore<Customer[]>(LOCAL_STORAGE_CUSTOMERS, []);
+    const customers = getLocalStore<Customer[]>(LOCAL_STORAGE_CUSTOMERS, INITIAL_CUSTOMERS);
+    const cleanPhone = (orderData.customer_mobile_snapshot || '').replace(/\D/g, '').slice(-10);
     const custIdx = customers.findIndex(
       (c) =>
-        c.id === orderData.customer_id ||
-        c.mobile_number === orderData.customer_mobile_snapshot
+        (orderData.customer_id && c.id === orderData.customer_id) ||
+        (cleanPhone && c.mobile_number === cleanPhone)
     );
     if (custIdx >= 0) {
       customers[custIdx].total_orders += 1;
-      customers[custIdx].total_spent = roundMoney(
-        customers[custIdx].total_spent + orderData.total_amount
-      );
       customers[custIdx].last_visit_at = timestamp;
+      customers[custIdx].status = 'ACTIVE';
+      if (orderData.customer_email_snapshot && !customers[custIdx].email) {
+        customers[custIdx].email = orderData.customer_email_snapshot;
+      }
+      if (orderData.payment_status === 'PAID') {
+        customers[custIdx].total_spent = roundMoney(
+          customers[custIdx].total_spent + orderData.total_amount
+        );
+      }
+      setLocalStore(LOCAL_STORAGE_CUSTOMERS, customers);
+    } else if (cleanPhone) {
+      // Create new customer record for guest checkout
+      const newCust: Customer = {
+        id: orderData.customer_id || generateUUIDv4(),
+        full_name: orderData.customer_name_snapshot || 'Guest Customer',
+        mobile_number: cleanPhone,
+        email: orderData.customer_email_snapshot || null,
+        total_orders: 1,
+        total_spent: orderData.payment_status === 'PAID' ? roundMoney(orderData.total_amount) : 0,
+        last_visit_at: timestamp,
+        last_login_at: timestamp,
+        created_at: timestamp,
+        status: 'ACTIVE',
+      };
+      customers.push(newCust);
       setLocalStore(LOCAL_STORAGE_CUSTOMERS, customers);
     }
   }
@@ -1250,7 +1351,33 @@ export async function fetchOrders(filter?: {
   return orders;
 }
 
-export async function fetchOrderById(idOrNumber: string): Promise<Order | null> {
+export async function fetchOrderById(idOrNumber: string, guestAccessToken?: string | null): Promise<Order | null> {
+  if (isSupabaseConfigured()) {
+    let token = guestAccessToken || null;
+    if (!token && typeof localStorage !== 'undefined') {
+      token = localStorage.getItem(`hangout_guest_token_${idOrNumber}`) || null;
+    }
+
+    if (token) {
+      try {
+        const { data: res, error } = await supabase.rpc('get_order_by_access_token', {
+          p_order_id: idOrNumber,
+          p_access_token: token,
+        });
+
+        if (!error && res && res.order) {
+          const ord = res.order;
+          return {
+            ...ord,
+            items: res.items || [],
+          } as Order;
+        }
+      } catch {
+        // Fall back to local store
+      }
+    }
+  }
+
   const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
   return (
     orders.find(
@@ -1269,8 +1396,10 @@ export async function fetchCustomerOrders(
   return orders.filter(
     (o) =>
       o.customer_id === mobileNumberOrId ||
-      o.customer_mobile_snapshot === clean ||
-      o.customer_mobile_snapshot.endsWith(clean)
+      (Boolean(clean) && Boolean(o.customer_mobile_snapshot) && (
+        o.customer_mobile_snapshot === clean ||
+        o.customer_mobile_snapshot.endsWith(clean)
+      ))
   );
 }
 
@@ -1393,12 +1522,34 @@ export async function processSimulatedPayment(params: {
   amount: number;
   paymentMethod: PaymentMethod;
   shouldFail?: boolean;
+  guestAccessToken?: string | null;
 }): Promise<{
   success: boolean;
   payment: Payment;
   transaction: PaymentTransaction;
   error?: string;
 }> {
+  if (params.orderId.startsWith('temp-ord-')) {
+    return {
+      success: false,
+      payment: {} as Payment,
+      transaction: {} as PaymentTransaction,
+      error: `Payment authorization failed: Temporary order reference "${params.orderId}" cannot be used for payment. Order must be created before payment confirmation.`,
+    };
+  }
+
+  // Prevent duplicate payment on already settled orders
+  const existingOrders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const existingOrder = existingOrders.find((o) => o.id === params.orderId);
+  if (existingOrder && existingOrder.payment_status === 'PAID') {
+    return {
+      success: false,
+      payment: {} as Payment,
+      transaction: {} as PaymentTransaction,
+      error: `Payment confirmation failed: Order ${existingOrder.order_number || params.orderId} has already been paid and settled.`,
+    };
+  }
+
   const timestamp = new Date().toISOString();
   const paymentId = 'pay_' + Date.now().toString(36);
   const txnRef = generateDemoTransactionRef();
@@ -1441,6 +1592,79 @@ export async function processSimulatedPayment(params: {
     created_at: timestamp,
   };
 
+  if (isSupabaseConfigured() && isSuccess) {
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (params.orderId.startsWith('temp-ord-')) {
+      return {
+        success: false,
+        payment: {} as Payment,
+        transaction: {} as PaymentTransaction,
+        error: `Payment authorization failed: invalid input syntax for type uuid: "${params.orderId}". Order must be created before payment confirmation.`,
+      };
+    }
+
+    if (UUID_REGEX.test(params.orderId)) {
+      try {
+        const dbMethod = params.paymentMethod === 'CARD'
+          ? 'CARD_DEMO'
+          : params.paymentMethod === 'UPI'
+          ? 'UPI_DEMO'
+          : params.paymentMethod;
+
+        const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+        const ord = orders.find((o) => o.id === params.orderId);
+        let token = params.guestAccessToken || ord?.guest_access_token || null;
+        if (!token && typeof localStorage !== 'undefined') {
+          token = localStorage.getItem(`hangout_guest_token_${params.orderId}`) ||
+                  (ord ? localStorage.getItem(`hangout_guest_token_${ord.order_number}`) : null);
+        }
+
+        let { error: rpcErr } = await supabase.rpc('confirm_demo_payment', {
+          p_order_id: params.orderId,
+          p_payment_method: dbMethod,
+          p_guest_access_token: token,
+          p_amount: params.amount,
+        });
+
+        if (rpcErr && (rpcErr.code === 'PGRST202' || rpcErr.message?.includes('parameters') || rpcErr.message?.includes('function'))) {
+          const retry = await supabase.rpc('confirm_demo_payment', {
+            p_order_id: params.orderId,
+            p_payment_method: dbMethod,
+          });
+          rpcErr = retry.error;
+        }
+
+        if (rpcErr) {
+          console.error('Remote confirm_demo_payment RPC error:', rpcErr);
+          const errMessage = rpcErr.message || 'Payment confirmation failed in backend';
+          return {
+            success: false,
+            payment: { ...paymentObj, payment_status: 'FAILED' },
+            transaction: {
+              ...transactionObj,
+              status: 'FAILURE',
+              error_message: errMessage,
+            },
+            error: `Payment confirmation failed: ${errMessage}`,
+          };
+        }
+      } catch (e: unknown) {
+        const errMessage = e instanceof Error ? e.message : 'Payment RPC exception';
+        console.error('confirm_demo_payment exception:', e);
+        return {
+          success: false,
+          payment: { ...paymentObj, payment_status: 'FAILED' },
+          transaction: {
+            ...transactionObj,
+            status: 'FAILURE',
+            error_message: errMessage,
+          },
+          error: `Payment confirmation failed: ${errMessage}`,
+        };
+      }
+    }
+  }
+
   // Update order's payment status in storage
   const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
   const ordIdx = orders.findIndex((o) => o.id === params.orderId);
@@ -1448,6 +1672,23 @@ export async function processSimulatedPayment(params: {
     orders[ordIdx].payment_status = paymentStatus;
     orders[ordIdx].updated_at = timestamp;
     setLocalStore(LOCAL_STORAGE_ORDERS, orders);
+
+    if (isSuccess) {
+      const paidOrd = orders[ordIdx];
+      const customers = getLocalStore<Customer[]>(LOCAL_STORAGE_CUSTOMERS, INITIAL_CUSTOMERS);
+      const cleanPhone = (paidOrd.customer_mobile_snapshot || '').replace(/\D/g, '').slice(-10);
+      const custIdx = customers.findIndex(
+        (c) =>
+          (paidOrd.customer_id && c.id === paidOrd.customer_id) ||
+          (cleanPhone && c.mobile_number === cleanPhone)
+      );
+      if (custIdx >= 0) {
+        customers[custIdx].total_spent = roundMoney(customers[custIdx].total_spent + paidOrd.total_amount);
+        customers[custIdx].last_visit_at = timestamp;
+        customers[custIdx].status = 'ACTIVE';
+        setLocalStore(LOCAL_STORAGE_CUSTOMERS, customers);
+      }
+    }
   }
 
   // Persist payments & transactions
@@ -1467,42 +1708,46 @@ export async function processSimulatedPayment(params: {
   };
 }
 
+export const confirmDemoPayment = processSimulatedPayment;
+
 // ---------------------------------------------------------------------------
 // 10. Admin Customer Management & Audit Logs
 // ---------------------------------------------------------------------------
 export async function fetchAdminCustomers(searchQuery?: string): Promise<Customer[]> {
-  let customers = getLocalStore<Customer[]>(LOCAL_STORAGE_CUSTOMERS, [
-    {
-      id: 'e0000000-0000-0000-0000-000000000001',
-      full_name: 'Aarav Sharma',
-      mobile_number: '9876543210',
-      email: 'aarav.sharma@example.com',
-      total_orders: 3,
-      total_spent: 1840,
-      last_visit_at: new Date().toISOString(),
-      created_at: '2026-01-10T10:00:00Z',
-    },
-    {
-      id: 'cust-demo-sneha',
-      full_name: 'Sneha Patel',
-      mobile_number: '9822334455',
-      email: 'sneha.p@example.com',
-      total_orders: 1,
-      total_spent: 609,
-      last_visit_at: '2026-11-19T11:20:00Z',
-      created_at: '2026-11-19T11:20:00Z',
-    },
-    {
-      id: 'cust-demo-kabir',
-      full_name: 'Kabir Mehta',
-      mobile_number: '9711223344',
-      email: null,
-      total_orders: 1,
-      total_spent: 441,
-      last_visit_at: '2026-11-19T11:45:00Z',
-      created_at: '2026-11-19T11:45:00Z',
-    },
-  ]);
+  let customers = getLocalStore<Customer[]>(LOCAL_STORAGE_CUSTOMERS, INITIAL_CUSTOMERS);
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+
+  // Derive dynamic stats from actual stored orders
+  customers = customers.map((c) => {
+    const cleanMobile = c.mobile_number.replace(/\D/g, '').slice(-10);
+    const matchedOrders = orders.filter(
+      (o) =>
+        o.customer_id === c.id ||
+        (o.customer_mobile_snapshot && o.customer_mobile_snapshot.replace(/\D/g, '').slice(-10) === cleanMobile)
+    );
+
+    // Honest calculation of paid spend from genuine paid orders
+    const dynamicPaidSpend = matchedOrders
+      .filter((o) => o.payment_status === 'PAID' && o.status !== 'CANCELLED' && o.status !== 'REJECTED')
+      .reduce((sum, o) => sum + o.total_amount, 0);
+
+    // Most recent order timestamp
+    const latestOrder = matchedOrders.length > 0
+      ? [...matchedOrders].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+      : null;
+
+    // Use dynamic stats if actual orders exist, or preserve mock baseline
+    const calculatedSpend = matchedOrders.length > 0 ? dynamicPaidSpend : c.total_spent;
+    const calculatedOrders = matchedOrders.length > 0 ? matchedOrders.length : c.total_orders;
+
+    return {
+      ...c,
+      status: c.status || (calculatedOrders > 0 ? 'ACTIVE' : 'NEW REGISTERED'),
+      total_orders: calculatedOrders,
+      total_spent: roundMoney(calculatedSpend),
+      last_visit_at: latestOrder ? latestOrder.created_at : c.last_visit_at,
+    };
+  });
 
   if (searchQuery?.trim()) {
     const q = searchQuery.toLowerCase().trim();
@@ -1578,6 +1823,7 @@ export function assertStaffPermission(role: UserRole, action: StaffAction): void
       'MANAGE_TABLES',
       'APPROVE_ORDERS',
       'CREATE_ORDERS',
+      'PREPARE_FOOD',
       'SETTLE_BILLS',
     ],
     kitchen: [
@@ -2623,4 +2869,169 @@ export async function closeCompletedOrder(orderId: string, actorName: string = '
   });
 
   return order;
+}
+
+// ---------------------------------------------------------------------------
+// 22. Admin Command Centre & Repository Extensions
+// ---------------------------------------------------------------------------
+
+export async function fetchAdminActivityLogs(): Promise<AdminActivityLog[]> {
+  return getLocalStore<AdminActivityLog[]>(LOCAL_STORAGE_ADMIN_ACTIVITY, INITIAL_ADMIN_ACTIVITY);
+}
+
+export async function recordAdminAction(
+  actorOrData: string | { actor: string; action: string; category: AdminActivityLog['category']; details?: string },
+  actionArg?: string,
+  categoryArg?: AdminActivityLog['category'],
+  detailsArg?: string
+): Promise<AdminActivityLog> {
+  const actor = typeof actorOrData === 'object' ? actorOrData.actor : actorOrData;
+  const action = typeof actorOrData === 'object' ? actorOrData.action : actionArg || '';
+  const category = typeof actorOrData === 'object' ? actorOrData.category : categoryArg || 'SETTINGS';
+  const details = typeof actorOrData === 'object' ? actorOrData.details : detailsArg;
+
+  const logs = getLocalStore<AdminActivityLog[]>(LOCAL_STORAGE_ADMIN_ACTIVITY, INITIAL_ADMIN_ACTIVITY);
+  const newLog: AdminActivityLog = {
+    id: `act-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    actor: actor || 'Administrator',
+    action,
+    category,
+    details,
+    timestamp: new Date().toISOString(),
+  };
+  const updatedLogs = [newLog, ...logs].slice(0, 100);
+  setLocalStore(LOCAL_STORAGE_ADMIN_ACTIVITY, updatedLogs);
+  return newLog;
+}
+
+export async function saveCafeTable(table: CafeTable): Promise<CafeTable> {
+  const tables = getLocalStore<CafeTable[]>(LOCAL_STORAGE_TABLES, INITIAL_TABLES);
+  const idx = tables.findIndex((t) => t.id === table.id);
+
+  // Validate duplicate table numbers
+  const isDuplicateNumber = tables.some(
+    (t) => t.id !== table.id && t.table_number.trim().toUpperCase() === table.table_number.trim().toUpperCase()
+  );
+  if (isDuplicateNumber) {
+    throw new Error(`Table number ${table.table_number} already exists.`);
+  }
+
+  if (idx >= 0) {
+    tables[idx] = { ...tables[idx], ...table };
+  } else {
+    tables.push(table);
+  }
+  setLocalStore(LOCAL_STORAGE_TABLES, tables);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('cafe_tables').upsert(table);
+    } catch (e) {
+      console.warn('Remote table upsert failed, preserved locally:', e);
+    }
+  }
+
+  await recordAdminAction('Administrator', `Saved table ${table.table_number}`, 'TABLES', `${table.section} (${table.seating_capacity} seats)`);
+  return table;
+}
+
+export async function deleteCafeTable(tableId: string): Promise<boolean> {
+  const tables = getLocalStore<CafeTable[]>(LOCAL_STORAGE_TABLES, INITIAL_TABLES);
+  const target = tables.find((t) => t.id === tableId);
+  if (!target) return false;
+
+  // Safe deactivation instead of hard historical delete
+  target.is_active = false;
+  setLocalStore(LOCAL_STORAGE_TABLES, tables);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('cafe_tables').update({ is_active: false }).eq('id', tableId);
+    } catch (e) {
+      console.warn('Remote table deactivation failed:', e);
+    }
+  }
+
+  await recordAdminAction('Administrator', `Deactivated table ${target.table_number}`, 'TABLES');
+  return true;
+}
+
+export async function saveDiscount(discount: Discount): Promise<Discount> {
+  const discounts = getLocalStore<Discount[]>(LOCAL_STORAGE_DISCOUNTS, INITIAL_DISCOUNTS);
+  const idx = discounts.findIndex((d) => d.id === discount.id);
+  if (idx >= 0) {
+    discounts[idx] = { ...discounts[idx], ...discount };
+  } else {
+    discounts.push(discount);
+  }
+  setLocalStore(LOCAL_STORAGE_DISCOUNTS, discounts);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('discounts').upsert(discount);
+    } catch (e) {
+      console.warn('Remote discount upsert failed, preserved locally:', e);
+    }
+  }
+
+  await recordAdminAction('Administrator', `Saved promotion code ${discount.code}`, 'PROMOTIONS');
+  return discount;
+}
+
+export async function deleteDiscount(discountId: string): Promise<boolean> {
+  const discounts = getLocalStore<Discount[]>(LOCAL_STORAGE_DISCOUNTS, INITIAL_DISCOUNTS);
+  const target = discounts.find((d) => d.id === discountId);
+  const filtered = discounts.filter((d) => d.id !== discountId);
+  setLocalStore(LOCAL_STORAGE_DISCOUNTS, filtered);
+
+  if (isSupabaseConfigured()) {
+    try {
+      await supabase.from('discounts').delete().eq('id', discountId);
+    } catch (e) {
+      console.warn('Remote discount delete failed:', e);
+    }
+  }
+
+  if (target) {
+    await recordAdminAction('Administrator', `Removed promotion ${target.code}`, 'PROMOTIONS');
+  }
+  return true;
+}
+
+export async function fetchStaffProfiles(): Promise<UserProfile[]> {
+  return getLocalStore<UserProfile[]>(LOCAL_STORAGE_STAFF_PROFILES, DEMO_PROFILES);
+}
+
+export async function saveStaffProfile(profile: UserProfile): Promise<UserProfile> {
+  const staff = getLocalStore<UserProfile[]>(LOCAL_STORAGE_STAFF_PROFILES, DEMO_PROFILES);
+  const idx = staff.findIndex((s) => s.id === profile.id);
+  if (idx >= 0) {
+    staff[idx] = { ...staff[idx], ...profile };
+  } else {
+    staff.push(profile);
+  }
+  setLocalStore(LOCAL_STORAGE_STAFF_PROFILES, staff);
+
+  await recordAdminAction('Administrator', `Updated staff member ${profile.full_name} (${profile.role_id})`, 'STAFF');
+  return profile;
+}
+
+export async function deleteStaffProfile(profileId: string): Promise<boolean> {
+  const staff = getLocalStore<UserProfile[]>(LOCAL_STORAGE_STAFF_PROFILES, DEMO_PROFILES);
+  const target = staff.find((s) => s.id === profileId);
+  if (!target) return false;
+
+  // Protect last active administrator from removal or demotion
+  if (target.role_id === 'admin') {
+    const activeAdminCount = staff.filter((s) => s.role_id === 'admin' && s.is_active).length;
+    if (activeAdminCount <= 1) {
+      throw new Error('Cannot remove or demote the last active Administrator account.');
+    }
+  }
+
+  const filtered = staff.filter((s) => s.id !== profileId);
+  setLocalStore(LOCAL_STORAGE_STAFF_PROFILES, filtered);
+
+  await recordAdminAction('Administrator', `Removed staff account ${target.full_name}`, 'STAFF');
+  return true;
 }

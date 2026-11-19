@@ -90,9 +90,9 @@ export const AdminMenuPage: React.FC = () => {
         is_available: true,
         is_featured: false,
         is_today_special: false,
-        image_url: 'https://images.unsplash.com/photo-1541167760496-1628856ab772?auto=format&fit=crop&q=80&w=600',
+        image_url: '/images/food/item-01-classic-shawarma-salad.jpg',
       });
-      setItemImagePreview('https://images.unsplash.com/photo-1541167760496-1628856ab772?auto=format&fit=crop&q=80&w=600');
+      setItemImagePreview('/images/food/item-01-classic-shawarma-salad.jpg');
     }
     setIsItemModalOpen(true);
   };
@@ -138,7 +138,7 @@ export const AdminMenuPage: React.FC = () => {
         ...editingItem,
         name: editingItem.name.trim(),
         category_id: editingItem.category_id,
-        image_url: itemImagePreview || editingItem.image_url || 'https://images.unsplash.com/photo-1541167760496-1628856ab772?auto=format&fit=crop&q=80&w=600',
+        image_url: itemImagePreview || editingItem.image_url || '/images/food/item-01-classic-shawarma-salad.jpg',
       };
       await saveMenuItem(itemToSave);
       showToast({
@@ -570,7 +570,7 @@ export const AdminMenuPage: React.FC = () => {
               <div className="flex flex-col sm:flex-row items-center gap-4 p-4 rounded-2xl bg-brand-warm-white border border-brand-border">
                 <div className="w-24 h-24 rounded-2xl overflow-hidden bg-white border border-brand-border shrink-0">
                   <img
-                    src={itemImagePreview || 'https://images.unsplash.com/photo-1541167760496-1628856ab772?auto=format&fit=crop&q=80&w=600'}
+                    src={itemImagePreview || '/images/food/item-01-classic-shawarma-salad.jpg'}
                     alt="Preview"
                     className="w-full h-full object-cover"
                   />
@@ -594,8 +594,8 @@ export const AdminMenuPage: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => {
-                          setItemImagePreview('https://images.unsplash.com/photo-1541167760496-1628856ab772?auto=format&fit=crop&q=80&w=600');
-                          setEditingItem({ ...editingItem, image_url: 'https://images.unsplash.com/photo-1541167760496-1628856ab772?auto=format&fit=crop&q=80&w=600' });
+                          setItemImagePreview('/images/food/item-01-classic-shawarma-salad.jpg');
+                          setEditingItem({ ...editingItem, image_url: '/images/food/item-01-classic-shawarma-salad.jpg' });
                         }}
                         className="text-xs text-brand-muted hover:text-red-600 underline"
                       >

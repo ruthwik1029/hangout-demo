@@ -5,6 +5,7 @@ import { Order, OrderStatus } from '../../types';
 import { Button } from '../../components/common/Button';
 import { Modal } from '../../components/common/Modal';
 import { Drawer } from '../../components/common/Drawer';
+import { CashierReceiptModal } from '../../components/staff/CashierReceiptModal';
 import { useToast } from '../../context/ToastContext';
 import {
   Search,
@@ -17,6 +18,7 @@ import {
   Banknote,
   Eye,
   Check,
+  Printer,
 } from 'lucide-react';
 
 export const AdminOrdersPage: React.FC = () => {
@@ -32,6 +34,7 @@ export const AdminOrdersPage: React.FC = () => {
   // Selected Order Drawer
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
 
   // Reject Reason Modal
   const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
@@ -392,6 +395,22 @@ export const AdminOrdersPage: React.FC = () => {
               </div>
             </div>
 
+            {/* Bill Receipt View & Print */}
+            <div className="flex items-center justify-between p-3.5 rounded-2xl bg-white border border-brand-border">
+              <div>
+                <span className="text-[10px] font-bold uppercase text-brand-muted block">Digital Receipt & Print</span>
+                <span className="text-xs font-semibold text-brand-black">View bill breakdown, reprint copy, or print 80mm thermal receipt</span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsReceiptModalOpen(true)}
+                leftIcon={<Printer className="w-3.5 h-3.5" />}
+              >
+                View / Print Bill
+              </Button>
+            </div>
+
             {/* Lifecycle Action Buttons */}
             <div className="p-5 bg-brand-charcoal text-white rounded-3xl space-y-3">
               <span className="text-xs font-bold text-brand-yellow uppercase tracking-wider block">
@@ -626,6 +645,13 @@ export const AdminOrdersPage: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      {/* Cashier Receipt Modal */}
+      <CashierReceiptModal
+        order={selectedOrder}
+        isOpen={isReceiptModalOpen}
+        onClose={() => setIsReceiptModalOpen(false)}
+      />
     </div>
   );
 };

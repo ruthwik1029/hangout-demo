@@ -1,14 +1,15 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { MenuItem, MenuCategory } from '../types';
+import { MenuItem, MenuCategory, CafeSettings } from '../types';
 import { CategoryPills } from '../components/menu/CategoryPills';
 import { MenuFilterBar } from '../components/menu/MenuFilterBar';
 import { MenuItemCard } from '../components/menu/MenuItemCard';
 import { TakeawayNoticeBanner } from '../components/layout/TakeawayNoticeBanner';
+import { fetchCafeSettings } from '../lib/supabase';
 import { useOrderMode } from '../context/OrderModeContext';
 import { useCart } from '../context/CartContext';
 import { EmptyState } from '../components/common/EmptyState';
-import { UtensilsCrossed, ShoppingBag, QrCode } from 'lucide-react';
+import { UtensilsCrossed, ShoppingBag, QrCode, AlertTriangle, Sparkles } from 'lucide-react';
 
 interface MenuPageProps {
   categories: MenuCategory[];
@@ -28,6 +29,11 @@ export const MenuPage: React.FC<MenuPageProps> = ({
 
   const { mode, setMode, currentTable } = useOrderMode();
   const { addItem } = useCart();
+  const [settings, setSettings] = useState<CafeSettings | null>(null);
+
+  useEffect(() => {
+    fetchCafeSettings().then(setSettings);
+  }, []);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [vegOnly, setVegOnly] = useState(false);
@@ -111,14 +117,39 @@ export const MenuPage: React.FC<MenuPageProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6 pb-24">
+      {/* Dynamic Announcement Banner */}
+      {settings?.announcement_banner?.is_enabled && settings.announcement_banner.text && (
+        <div className="bg-brand-black text-brand-yellow px-4 py-2.5 rounded-2xl text-center text-xs font-heading font-bold flex items-center justify-center gap-2 border border-brand-yellow/30 shadow-xs">
+          <Sparkles className="w-3.5 h-3.5 text-brand-yellow animate-pulse" />
+          <span>{settings.announcement_banner.text}</span>
+        </div>
+      )}
+
+      {/* Online Ordering Paused Notice */}
+      {settings?.is_online_ordering_paused && (
+        <div className="p-4 bg-amber-500/15 border-2 border-amber-500/50 rounded-2xl flex items-center gap-3 text-amber-950 font-medium text-xs sm:text-sm">
+          <AlertTriangle className="w-5 h-5 text-amber-700 shrink-0" />
+          <div>
+            <span className="font-heading font-extrabold uppercase tracking-wide mr-2 text-amber-900">
+              Online Ordering Notice:
+            </span>
+            <span>
+              {settings.order_pause_reason ||
+                settings.pause_ordering_message ||
+                'Online ordering is currently suspended. Please visit our restaurant counter.'}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Top Header & Mode Status Bar */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-brand-border pb-6">
         <div>
           <h1 className="font-heading font-extrabold text-3xl sm:text-4xl text-brand-black tracking-tight">
-            HANGOUT Cafe Menu
+            HANGOUT Restaurant Menu
           </h1>
           <p className="text-xs sm:text-sm text-brand-muted mt-1 font-sans">
-            Freshly pulled single-origin coffees, slow sourdough toasts & handcrafted kitchen plates.
+            Authentic rotisserie chicken shawarmas, freshly griddled flaky murtabak & crispy chicken starters.
           </p>
         </div>
 

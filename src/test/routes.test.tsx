@@ -48,7 +48,7 @@ describe('Route Verification and Rendering', () => {
       />
     );
 
-    expect(screen.getByText(/Where specialty brews meet/i)).toBeInTheDocument();
+    expect(screen.getByText(/Authentic Flame-Roasted/i)).toBeInTheDocument();
     expect(screen.getByText(/Explore Full Menu/i)).toBeInTheDocument();
     expect(screen.getByText(/Today's Specials/i)).toBeInTheDocument();
     expect(screen.getByText(/Popular at HANGOUT/i)).toBeInTheDocument();
@@ -65,9 +65,9 @@ describe('Route Verification and Rendering', () => {
       />
     );
 
-    expect(screen.getByText(/HANGOUT Cafe Menu/i)).toBeInTheDocument();
-    expect(screen.getByText(/Artisanal Coffee/i)).toBeInTheDocument();
-    expect(screen.getByText(/Refreshers & Matcha/i)).toBeInTheDocument();
+    expect(screen.getByText(/HANGOUT Restaurant Menu/i)).toBeInTheDocument();
+    expect(screen.getByText(/Shawarma - With Salad/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Chicken Murtabak/i).length).toBeGreaterThan(0);
   });
 
   it('renders Table Entry Page recognizing table identifier T-04', async () => {
@@ -80,7 +80,7 @@ describe('Route Verification and Rendering', () => {
 
     const headings = await screen.findAllByText(/Table T-04/i);
     expect(headings.length).toBeGreaterThan(0);
-    const patio = await screen.findAllByText(/Sunny Patio/i);
+    const patio = await screen.findAllByText(/Open Terrace/i);
     expect(patio.length).toBeGreaterThan(0);
   });
 
@@ -92,11 +92,14 @@ describe('Route Verification and Rendering', () => {
     expect(takeawayMatches.length).toBeGreaterThan(0);
   });
 
-  it('renders Internal Portal Login with Staff, Waiter and Kitchen roles', () => {
+  it('renders Internal Portal Login with exactly 4 visible roles: Admin, Manager, Cashier, and Staff', () => {
     renderWithProviders('/auth/portal-login', <PortalLogin />);
     expect(screen.getByText(/Internal Portals & Roles/i)).toBeInTheDocument();
-    expect(screen.getByText(/Ananya Deshmukh/i)).toBeInTheDocument();
-    expect(screen.getByText(/Chef Maria Santos/i)).toBeInTheDocument();
+    expect(screen.getByText(/Administrator/i)).toBeInTheDocument();
+    expect(screen.getByText(/Duty Manager/i)).toBeInTheDocument();
+    expect(screen.getByText(/Billing Cashier/i)).toBeInTheDocument();
+    expect(screen.getByText(/Floor Staff/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Kitchen Staff/i)).not.toBeInTheDocument();
   });
 
   it('renders Staff Portal Foundation with table layout', () => {

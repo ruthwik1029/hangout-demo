@@ -32,7 +32,7 @@ export const MenuFilterBar: React.FC<MenuFilterBarProps> = ({
           type="text"
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
-          placeholder="Search artisan coffee, smash burgers, toasts..."
+          placeholder="Search shawarmas, murtabak, starters..."
           className="w-full pl-9 pr-8 py-2 bg-brand-warm-white border border-brand-border/60 rounded-xl text-xs sm:text-sm font-sans focus:outline-none focus:ring-2 focus:ring-brand-yellow focus:border-brand-black transition-all"
         />
         {searchQuery && (

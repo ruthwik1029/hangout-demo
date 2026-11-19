@@ -30,6 +30,9 @@ export interface Customer {
   last_visit_at: string;
   created_at: string;
   updated_at?: string;
+  status?: 'ACTIVE' | 'NEW REGISTERED' | 'INACTIVE';
+  last_login_at?: string;
+  notes?: string;
 }
 
 export interface CustomerSession {
@@ -64,6 +67,31 @@ export interface CafeSettings {
   currency_symbol: string;
   currency_code: string;
   takeaway_notice: string;
+  is_online_ordering_paused?: boolean;
+  pause_ordering_message?: string;
+  order_pause_reason?: string;
+  sound_alert_enabled?: boolean;
+  auto_refresh_interval?: number;
+  kitchen_display_mode?: 'standard' | 'compact' | 'high-contrast';
+  receipt_footer_message?: string;
+  emergency_phone?: string;
+  announcement_banner?: {
+    is_enabled: boolean;
+    text: string;
+  };
+  hero_headline?: string;
+  hero_subheadline?: string;
+  hero_image_url?: string;
+  is_restaurant_open?: boolean;
+}
+
+export interface AdminActivityLog {
+  id: string;
+  actor: string;
+  action: string;
+  category: 'MENU' | 'SETTINGS' | 'ORDERS' | 'STAFF' | 'TABLES' | 'BILLING' | 'PROMOTIONS' | 'CUSTOMERS';
+  details?: string;
+  timestamp: string;
 }
 
 export type TableStatus = 'available' | 'occupied' | 'reserved' | 'cleaning';
@@ -269,6 +297,8 @@ export interface OrderItem {
 export interface Order {
   id: string;
   order_number: string;
+  guest_access_token?: string;
+  guest_access_token_hash?: string;
   customer_id?: string | null;
   customer_name_snapshot: string;
   customer_mobile_snapshot: string;

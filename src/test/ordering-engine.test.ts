@@ -118,13 +118,29 @@ describe('Ordering Engine & Pricing Architecture (Batch 02)', () => {
   });
 
   it('enforces order lifecycle state machine transitions', async () => {
+    // Seed a pending order into local storage
+    const testOrder = {
+      id: 'ord-test-state',
+      order_number: 'HG-2026-99999',
+      order_status: 'PENDING' as const,
+      status: 'PENDING' as const,
+      order_type: 'DINING' as const,
+      subtotal: 300,
+      discount_amount: 0,
+      tax_amount: 15,
+      total_amount: 315,
+      items: [],
+      created_at: new Date().toISOString(),
+    };
+    localStorage.setItem('hangout_orders_store', JSON.stringify([testOrder]));
+
     // 1. Valid transition: PENDING -> ACCEPTED
-    const acceptedOrder = await updateOrderStatus('ord-0003', 'ACCEPTED', 'Manager Approval');
+    const acceptedOrder = await updateOrderStatus(testOrder.id, 'ACCEPTED', 'Manager Approval');
     expect(acceptedOrder.order_status).toBe('ACCEPTED');
 
     // 2. Invalid transition: ACCEPTED directly to COMPLETED (must go PREPARING -> READY -> COMPLETED)
     await expect(
-      updateOrderStatus('ord-0003', 'COMPLETED', 'Skip kitchen')
+      updateOrderStatus(testOrder.id, 'COMPLETED', 'Skip kitchen')
     ).rejects.toThrow(/Cannot transition order status/);
   });
 });

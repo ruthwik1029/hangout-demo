@@ -79,10 +79,10 @@ export const ProfilePage: React.FC = () => {
           <User className="w-8 h-8" />
         </div>
         <h1 className="font-heading font-extrabold text-2xl text-brand-black">
-          Customer Check-In
+          Customer Account & Order History
         </h1>
         <p className="text-xs text-brand-muted mt-2 mb-6 leading-relaxed font-sans">
-          Register or check in with your mobile number to link your dining table orders or track self-pickup items.
+          Account-level order history is reserved for authenticated users. If you placed a guest order, you can track it anytime using your order confirmation link or order number.
         </p>
         <div className="flex flex-col gap-2">
           <Button variant="primary" size="lg" onClick={openRegisterModal}>

@@ -20,7 +20,9 @@ import {
   DollarSign,
   Receipt,
   Sparkles,
+  Printer,
 } from 'lucide-react';
+import { CashierReceiptModal } from './CashierReceiptModal';
 
 interface BillSplittingModalProps {
   order: Order | null;
@@ -44,6 +46,7 @@ export const BillSplittingModal: React.FC<BillSplittingModalProps> = ({
   const [itemAssignments, setItemAssignments] = useState<Record<number, string[]>>({ 1: [], 2: [] });
   const [splits, setSplits] = useState<BillSplit[]>([]);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [showReceiptModal, setShowReceiptModal] = useState<boolean>(false);
 
   // Load existing splits if already created
   useEffect(() => {
@@ -186,9 +189,8 @@ export const BillSplittingModal: React.FC<BillSplittingModalProps> = ({
               Outstanding Balance
             </p>
             <p
-              className={`font-mono text-2xl font-black ${
-                outstandingBalance === 0 ? 'text-emerald-400' : 'text-amber-400'
-              }`}
+              className={`font-mono text-2xl font-black ${outstandingBalance === 0 ? 'text-emerald-400' : 'text-amber-400'
+                }`}
             >
               ₹{outstandingBalance.toFixed(2)}
             </p>
@@ -211,11 +213,10 @@ export const BillSplittingModal: React.FC<BillSplittingModalProps> = ({
               <button
                 type="button"
                 onClick={() => setActiveMode('EQUAL')}
-                className={`p-3.5 rounded-2xl border text-left transition-all ${
-                  activeMode === 'EQUAL'
+                className={`p-3.5 rounded-2xl border text-left transition-all ${activeMode === 'EQUAL'
                     ? 'border-brand-black bg-brand-soft-yellow/50 shadow-sm ring-1 ring-brand-black'
                     : 'border-brand-border bg-white hover:border-brand-charcoal/40'
-                }`}
+                  }`}
               >
                 <Users className="w-5 h-5 text-brand-black mb-1.5" />
                 <p className="font-heading font-bold text-xs text-brand-black">1. Equal Split</p>
@@ -227,11 +228,10 @@ export const BillSplittingModal: React.FC<BillSplittingModalProps> = ({
               <button
                 type="button"
                 onClick={() => setActiveMode('ITEMS')}
-                className={`p-3.5 rounded-2xl border text-left transition-all ${
-                  activeMode === 'ITEMS'
+                className={`p-3.5 rounded-2xl border text-left transition-all ${activeMode === 'ITEMS'
                     ? 'border-brand-black bg-brand-soft-yellow/50 shadow-sm ring-1 ring-brand-black'
                     : 'border-brand-border bg-white hover:border-brand-charcoal/40'
-                }`}
+                  }`}
               >
                 <UtensilsCrossed className="w-5 h-5 text-brand-black mb-1.5" />
                 <p className="font-heading font-bold text-xs text-brand-black">2. Split by Items</p>
@@ -243,11 +243,10 @@ export const BillSplittingModal: React.FC<BillSplittingModalProps> = ({
               <button
                 type="button"
                 onClick={() => setActiveMode('CUSTOM')}
-                className={`p-3.5 rounded-2xl border text-left transition-all ${
-                  activeMode === 'CUSTOM'
+                className={`p-3.5 rounded-2xl border text-left transition-all ${activeMode === 'CUSTOM'
                     ? 'border-brand-black bg-brand-soft-yellow/50 shadow-sm ring-1 ring-brand-black'
                     : 'border-brand-border bg-white hover:border-brand-charcoal/40'
-                }`}
+                  }`}
               >
                 <DollarSign className="w-5 h-5 text-brand-black mb-1.5" />
                 <p className="font-heading font-bold text-xs text-brand-black">3. Custom Split</p>
@@ -268,11 +267,10 @@ export const BillSplittingModal: React.FC<BillSplittingModalProps> = ({
                         key={num}
                         type="button"
                         onClick={() => setEqualCount(num)}
-                        className={`w-8 h-8 rounded-xl font-heading font-black text-xs transition-colors ${
-                          equalCount === num
+                        className={`w-8 h-8 rounded-xl font-heading font-black text-xs transition-colors ${equalCount === num
                             ? 'bg-brand-black text-brand-yellow'
                             : 'bg-white border border-brand-border text-brand-black hover:bg-brand-soft-yellow'
-                        }`}
+                          }`}
                       >
                         {num}
                       </button>
@@ -442,22 +440,20 @@ export const BillSplittingModal: React.FC<BillSplittingModalProps> = ({
                 return (
                   <div
                     key={split.id}
-                    className={`p-4 rounded-2xl border transition-all space-y-3 ${
-                      isPaid
+                    className={`p-4 rounded-2xl border transition-all space-y-3 ${isPaid
                         ? 'border-emerald-300 bg-emerald-50/40'
                         : 'border-brand-border bg-white shadow-card-subtle'
-                    }`}
+                      }`}
                   >
                     <div className="flex items-center justify-between">
                       <span className="font-heading font-bold text-sm text-brand-black">
                         {split.label}
                       </span>
                       <span
-                        className={`text-[10px] font-heading font-black px-2 py-0.5 rounded-full uppercase tracking-wider ${
-                          isPaid
+                        className={`text-[10px] font-heading font-black px-2 py-0.5 rounded-full uppercase tracking-wider ${isPaid
                             ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
                             : 'bg-amber-100 text-amber-900 border border-amber-300'
-                        }`}
+                          }`}
                       >
                         {isPaid ? 'PAID' : 'UNPAID'}
                       </span>
@@ -524,19 +520,38 @@ export const BillSplittingModal: React.FC<BillSplittingModalProps> = ({
             Done / Close
           </Button>
 
-          {outstandingBalance === 0 && order.order_status !== 'COMPLETED' && (
+          <div className="flex items-center gap-2">
             <Button
-              variant="primary"
-              size="md"
-              onClick={handleCloseOrder}
-              disabled={isProcessing}
-              leftIcon={<Sparkles className="w-4 h-4" />}
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setShowReceiptModal(true)}
+              leftIcon={<Printer className="w-3.5 h-3.5" />}
             >
-              Complete Order & Mark Table Cleaning
+              Print Bill
             </Button>
-          )}
+
+            {outstandingBalance === 0 && order.order_status !== 'COMPLETED' && (
+              <Button
+                variant="primary"
+                size="md"
+                onClick={handleCloseOrder}
+                disabled={isProcessing}
+                leftIcon={<Sparkles className="w-4 h-4" />}
+              >
+                Complete Order & Mark Table Cleaning
+              </Button>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* Cashier Receipt Modal from Split Modal */}
+      <CashierReceiptModal
+        order={order}
+        isOpen={showReceiptModal}
+        onClose={() => setShowReceiptModal(false)}
+      />
     </Modal>
   );
 };

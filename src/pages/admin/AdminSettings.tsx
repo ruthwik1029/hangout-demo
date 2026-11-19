@@ -5,20 +5,26 @@ import {
   updateCafeSettings,
   fetchTaxConfiguration,
   updateTaxConfiguration,
-  calculateOrderTaxes,
+  recordAdminAction,
 } from '../../lib/supabase';
 import { CafeSettings, TaxConfiguration } from '../../types';
 import { Button } from '../../components/common/Button';
 import { useToast } from '../../context/ToastContext';
 import { useCart } from '../../context/CartContext';
 import {
-  Percent,
   ShoppingBag,
   UtensilsCrossed,
   Info,
   Save,
-  Calculator,
   Building,
+  Volume2,
+  VolumeX,
+  Bell,
+  RefreshCw,
+  Monitor,
+  FileText,
+  PhoneCall,
+  PauseCircle,
 } from 'lucide-react';
 
 export const AdminSettings: React.FC = () => {
@@ -29,9 +35,6 @@ export const AdminSettings: React.FC = () => {
   const [taxConfig, setTaxConfig] = useState<TaxConfiguration | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Live Tax Calculator State
-  const [testSubtotal, setTestSubtotal] = useState<number>(500);
-
   useEffect(() => {
     Promise.all([fetchCafeSettings(), fetchTaxConfiguration()]).then(([s, t]) => {
       setSettings(s);
@@ -39,10 +42,31 @@ export const AdminSettings: React.FC = () => {
     });
   }, []);
 
-  // Compute live tax breakdown preview
-  const livePreview = taxConfig
-    ? calculateOrderTaxes(testSubtotal, 0, taxConfig)
-    : null;
+  // Web Audio order chime sound test
+  const handleTestSoundAlert = () => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) {
+        showToast({ type: 'warning', title: 'Audio Unsupported', message: 'Browser Web Audio not available.' });
+        return;
+      }
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12); // A5
+      gain.gain.setValueAtTime(0.25, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.4);
+      showToast({ type: 'success', title: 'Sound Played', message: 'Order alert chime tested.' });
+    } catch (err) {
+      console.error('Audio test error:', err);
+    }
+  };
 
   const handleSaveAll = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,10 +78,17 @@ export const AdminSettings: React.FC = () => {
       await updateTaxConfiguration(taxConfig);
       await refreshTaxConfig();
 
+      await recordAdminAction({
+        actor: 'Administrator',
+        action: 'Updated restaurant operations and billing settings',
+        category: 'SETTINGS',
+        details: `Ordering ${settings.is_online_ordering_paused ? 'PAUSED' : 'ACTIVE'}, Tax ${taxConfig.default_tax_rate}%, Alert Sound ${settings.sound_alert_enabled ? 'ON' : 'OFF'}.`,
+      });
+
       showToast({
         type: 'success',
         title: 'Settings Saved',
-        message: 'Cafe configuration and centralized GST parameters updated successfully.',
+        message: 'Restaurant configuration and operational switches updated successfully.',
       });
     } catch {
       showToast({
@@ -77,17 +108,238 @@ export const AdminSettings: React.FC = () => {
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 pb-24">
       <AdminNav
-        title="Cafe & Billing Settings"
-        subtitle="Manage business details, mode availability, pickup slots, and centralized GST rates."
+        title="Operations & Restaurant Settings"
+        subtitle="Manage live operations, order switches, sound alerts, display modes, and billing."
       />
 
       <form onSubmit={handleSaveAll} className="space-y-6">
-        {/* Business Profile */}
+        {/* 1. Live Operations & Emergency Controls */}
+        <div className="p-6 bg-white rounded-3xl border border-brand-border shadow-card-subtle space-y-5">
+          <div className="flex items-center justify-between pb-3 border-b border-brand-border">
+            <div className="flex items-center gap-2">
+              <PauseCircle className="w-5 h-5 text-amber-500" />
+              <div>
+                <h2 className="font-heading font-bold text-base text-brand-black">
+                  Operational Rush Controls & Online Ordering
+                </h2>
+                <p className="text-xs text-brand-muted">
+                  Temporarily pause online ordering during extreme kitchen surges or private events.
+                </p>
+              </div>
+            </div>
+
+            <span
+              className={`text-xs font-bold px-3 py-1 rounded-full ${
+                settings.is_online_ordering_paused
+                  ? 'bg-amber-100 text-amber-900'
+                  : 'bg-emerald-100 text-emerald-900'
+              }`}
+            >
+              {settings.is_online_ordering_paused ? 'ORDERING PAUSED' : 'ONLINE ORDERING ACTIVE'}
+            </span>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-brand-warm-white border border-brand-border flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <p className="font-heading font-bold text-sm text-brand-black">
+                Pause Online Customer Ordering
+              </p>
+              <p className="text-xs text-brand-muted mt-0.5">
+                When enabled, checkout is blocked and customers are informed via an announcement banner.
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={Boolean(settings.is_online_ordering_paused)}
+                onChange={(e) =>
+                  setSettings({ ...settings, is_online_ordering_paused: e.target.checked })
+                }
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-600"></div>
+            </label>
+          </div>
+
+          {settings.is_online_ordering_paused && (
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-wider text-brand-black mb-1.5">
+                Pause Reason Displayed to Customers
+              </label>
+              <input
+                type="text"
+                value={settings.order_pause_reason || ''}
+                onChange={(e) => setSettings({ ...settings, order_pause_reason: e.target.value })}
+                placeholder="e.g. Kitchen is currently at full capacity. Online ordering will resume in 20 minutes."
+                className="w-full p-2.5 bg-brand-warm-white border border-brand-border rounded-xl text-xs sm:text-sm font-sans focus:ring-2 focus:ring-brand-yellow focus:outline-none"
+              />
+            </div>
+          )}
+        </div>
+
+        {/* 2. Audio Alerts, Kitchen Display & Refresh Interval */}
+        <div className="p-6 bg-white rounded-3xl border border-brand-border shadow-card-subtle space-y-5">
+          <div className="flex items-center gap-2 pb-3 border-b border-brand-border">
+            <Bell className="w-5 h-5 text-brand-yellow" />
+            <div>
+              <h2 className="font-heading font-bold text-base text-brand-black">
+                Alerts, Display & Screen Refresh
+              </h2>
+              <p className="text-xs text-brand-muted">
+                Audio notifications and display parameters for staff stations and KDS.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Sound Alert Switch */}
+            <div className="p-4 rounded-2xl bg-brand-warm-white border border-brand-border flex flex-col justify-between space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {settings.sound_alert_enabled ? (
+                    <Volume2 className="w-4 h-4 text-emerald-600" />
+                  ) : (
+                    <VolumeX className="w-4 h-4 text-brand-muted" />
+                  )}
+                  <span className="font-heading font-bold text-xs text-brand-black">
+                    New Order Sound Chime
+                  </span>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settings.sound_alert_enabled ?? true}
+                    onChange={(e) =>
+                      setSettings({ ...settings, sound_alert_enabled: e.target.checked })
+                    }
+                    className="sr-only peer"
+                  />
+                  <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-black"></div>
+                </label>
+              </div>
+              <p className="text-[11px] text-brand-muted">
+                Play acoustic chime upon arrival of incoming orders.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleTestSoundAlert}
+                leftIcon={<Volume2 className="w-3.5 h-3.5" />}
+              >
+                Test Sound Chime
+              </Button>
+            </div>
+
+            {/* Auto-Refresh Interval */}
+            <div className="p-4 rounded-2xl bg-brand-warm-white border border-brand-border flex flex-col justify-between space-y-3">
+              <div className="flex items-center gap-2">
+                <RefreshCw className="w-4 h-4 text-brand-yellow" />
+                <span className="font-heading font-bold text-xs text-brand-black">
+                  Auto-Refresh Interval
+                </span>
+              </div>
+              <p className="text-[11px] text-brand-muted">
+                Frequency for background sync across orders queue.
+              </p>
+              <select
+                value={settings.auto_refresh_interval ?? 30}
+                onChange={(e) =>
+                  setSettings({ ...settings, auto_refresh_interval: parseInt(e.target.value) || 30 })
+                }
+                className="w-full p-2 bg-white border border-brand-border rounded-xl text-xs font-sans font-bold focus:ring-2 focus:ring-brand-yellow focus:outline-none"
+              >
+                <option value={10}>10 Seconds (Fast)</option>
+                <option value={30}>30 Seconds (Default)</option>
+                <option value={60}>60 Seconds (Relaxed)</option>
+                <option value={0}>Manual Refresh Only</option>
+              </select>
+            </div>
+
+            {/* Kitchen Display Mode */}
+            <div className="p-4 rounded-2xl bg-brand-warm-white border border-brand-border flex flex-col justify-between space-y-3">
+              <div className="flex items-center gap-2">
+                <Monitor className="w-4 h-4 text-brand-yellow" />
+                <span className="font-heading font-bold text-xs text-brand-black">
+                  Kitchen Display Mode
+                </span>
+              </div>
+              <p className="text-[11px] text-brand-muted">
+                Contrast and density on kitchen screens.
+              </p>
+              <select
+                value={settings.kitchen_display_mode ?? 'standard'}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    kitchen_display_mode: e.target.value as 'standard' | 'compact' | 'high-contrast',
+                  })
+                }
+                className="w-full p-2 bg-white border border-brand-border rounded-xl text-xs font-sans font-bold focus:ring-2 focus:ring-brand-yellow focus:outline-none"
+              >
+                <option value="standard">Standard (Full Cards)</option>
+                <option value="compact">Compact (High Density)</option>
+                <option value="high-contrast">High Contrast (Dark Kitchen)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* 3. Receipt Messages & Emergency Support */}
+        <div className="p-6 bg-white rounded-3xl border border-brand-border shadow-card-subtle space-y-4">
+          <div className="flex items-center gap-2 pb-3 border-b border-brand-border">
+            <FileText className="w-5 h-5 text-brand-yellow" />
+            <div>
+              <h2 className="font-heading font-bold text-base text-brand-black">
+                Receipt Footer & Emergency Escalation
+              </h2>
+              <p className="text-xs text-brand-muted">
+                Information printed on thermal receipts and shared on customer order confirmation.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-wider text-brand-black mb-1.5">
+                Receipt Footer Message
+              </label>
+              <input
+                type="text"
+                value={settings.receipt_footer_message || ''}
+                onChange={(e) => setSettings({ ...settings, receipt_footer_message: e.target.value })}
+                placeholder="e.g. Thank you for dining at HANGOUT! Visit again soon."
+                className="w-full p-2.5 bg-brand-warm-white border border-brand-border rounded-xl text-xs sm:text-sm font-sans focus:ring-2 focus:ring-brand-yellow focus:outline-none"
+              />
+              <p className="text-[11px] text-brand-muted mt-1">
+                Appears at the bottom of digital and thermal bills.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-wider text-brand-black mb-1.5 flex items-center gap-1">
+                <PhoneCall className="w-3.5 h-3.5 text-brand-yellow" /> Emergency Staff Hotline
+              </label>
+              <input
+                type="text"
+                value={settings.emergency_phone || ''}
+                onChange={(e) => setSettings({ ...settings, emergency_phone: e.target.value })}
+                placeholder="e.g. +91 80 4567 8900"
+                className="w-full p-2.5 bg-brand-warm-white border border-brand-border rounded-xl text-xs sm:text-sm font-sans focus:ring-2 focus:ring-brand-yellow focus:outline-none"
+              />
+              <p className="text-[11px] text-brand-muted mt-1">
+                Internal manager hotline for customer escalation.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* 4. Restaurant Profile & Order Modes */}
         <div className="p-6 bg-white rounded-3xl border border-brand-border shadow-card-subtle space-y-4">
           <div className="flex items-center gap-2">
             <Building className="w-5 h-5 text-brand-yellow" />
             <h2 className="font-heading font-bold text-base text-brand-black">
-              Cafe Business Profile
+              Restaurant Business Profile
             </h2>
           </div>
 
@@ -128,16 +380,9 @@ export const AdminSettings: React.FC = () => {
               />
             </div>
           </div>
-        </div>
 
-        {/* Ordering Availability & Operational Switches */}
-        <div className="p-6 bg-white rounded-3xl border border-brand-border shadow-card-subtle space-y-4">
-          <h2 className="font-heading font-bold text-base text-brand-black">
-            Order Modes & Operational Switches
-          </h2>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Dining In */}
+          {/* Dining and Takeaway toggles */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
             <div className="p-4 rounded-2xl bg-brand-warm-white border border-brand-border flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-white border border-brand-border flex items-center justify-center text-brand-black">
@@ -161,7 +406,6 @@ export const AdminSettings: React.FC = () => {
               </label>
             </div>
 
-            {/* Takeaway */}
             <div className="p-4 rounded-2xl bg-brand-warm-white border border-brand-border flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-white border border-brand-border flex items-center justify-center text-brand-black">
@@ -187,7 +431,7 @@ export const AdminSettings: React.FC = () => {
           </div>
         </div>
 
-        {/* Mandatory Customer-Facing Takeaway Notice */}
+        {/* 5. Customer Self-Pickup Notice Text */}
         <div className="p-6 bg-white rounded-3xl border border-brand-border shadow-card-subtle space-y-4">
           <div className="flex items-center gap-2 text-brand-black">
             <Info className="w-4 h-4 text-brand-yellow" />
@@ -208,170 +452,6 @@ export const AdminSettings: React.FC = () => {
           />
         </div>
 
-        {/* Centralized GST Rates & Live Tax Calculator */}
-        <div className="p-6 bg-white rounded-3xl border border-brand-border shadow-card-subtle space-y-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Percent className="w-5 h-5 text-brand-yellow" />
-              <div>
-                <h2 className="font-heading font-bold text-base text-brand-black">
-                  Centralized GST & Tax Architecture
-                </h2>
-                <p className="text-xs text-brand-muted">
-                  Configurable tax rate with automatic CGST and SGST equal split.
-                </p>
-              </div>
-            </div>
-            <span className="text-xs bg-brand-soft-yellow px-2.5 py-1 rounded-full font-bold text-brand-black">
-              Dynamic Config
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-brand-black mb-1.5">
-                Total GST Rate (%)
-              </label>
-              <input
-                type="number"
-                step="0.1"
-                min="0"
-                max="28"
-                value={taxConfig.default_tax_rate}
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value) || 0;
-                  setTaxConfig({
-                    ...taxConfig,
-                    default_tax_rate: val,
-                    tax_rate_percentage: val,
-                    cgst_rate: val / 2,
-                    cgst_percentage: val / 2,
-                    sgst_rate: val / 2,
-                    sgst_percentage: val / 2,
-                  });
-                }}
-                className="w-full p-2.5 bg-brand-warm-white border border-brand-border rounded-xl text-sm font-mono focus:ring-2 focus:ring-brand-yellow focus:outline-none"
-              />
-              <p className="text-[11px] text-brand-muted mt-1">Standard Indian cafe GST is 5.00%</p>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-brand-black mb-1.5">
-                CGST Split (%)
-              </label>
-              <input
-                type="number"
-                disabled
-                value={taxConfig.cgst_rate}
-                className="w-full p-2.5 bg-gray-100 border border-brand-border rounded-xl text-sm font-mono text-brand-muted"
-              />
-              <p className="text-[11px] text-brand-muted mt-1">Auto 50% of total GST</p>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-brand-black mb-1.5">
-                SGST Split (%)
-              </label>
-              <input
-                type="number"
-                disabled
-                value={taxConfig.sgst_rate}
-                className="w-full p-2.5 bg-gray-100 border border-brand-border rounded-xl text-sm font-mono text-brand-muted"
-              />
-              <p className="text-[11px] text-brand-muted mt-1">Auto 50% of total GST</p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-brand-black mb-1.5">
-                GSTIN / Tax Registration
-              </label>
-              <input
-                type="text"
-                value={settings.gst_number}
-                onChange={(e) => setSettings({ ...settings, gst_number: e.target.value })}
-                className="w-full p-2.5 bg-brand-warm-white border border-brand-border rounded-xl text-xs sm:text-sm font-mono uppercase focus:ring-2 focus:ring-brand-yellow focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-brand-black mb-1.5">
-                Tax Mode
-              </label>
-              <div className="p-2.5 rounded-xl border border-brand-border bg-brand-warm-white flex items-center justify-between text-xs">
-                <span className="font-bold text-brand-black">
-                  {taxConfig.is_tax_inclusive ? 'Tax Inclusive in Prices' : 'Tax Exclusive (Added at Checkout)'}
-                </span>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={taxConfig.is_tax_inclusive}
-                    onChange={(e) =>
-                      setTaxConfig({ ...taxConfig, is_tax_inclusive: e.target.checked })
-                    }
-                    className="sr-only peer"
-                  />
-                  <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-black"></div>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          {/* Interactive Live Tax Calculator Preview */}
-          <div className="p-5 rounded-3xl bg-brand-warm-white border border-brand-border space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-heading font-bold text-sm text-brand-black flex items-center gap-2">
-                <Calculator className="w-4 h-4 text-brand-black" />
-                <span>Live Tax Calculation Preview</span>
-              </h3>
-              <span className="text-[11px] font-bold text-brand-muted">
-                Decimal-Safe KaTeX Arithmetic
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
-              <div>
-                <label className="block text-xs font-bold text-brand-black mb-1">
-                  Test Subtotal (₹)
-                </label>
-                <input
-                  type="number"
-                  step="10"
-                  min="0"
-                  value={testSubtotal}
-                  onChange={(e) => setTestSubtotal(parseFloat(e.target.value) || 0)}
-                  className="w-full p-2 bg-white border border-brand-border rounded-xl text-sm font-mono focus:ring-2 focus:ring-brand-yellow focus:outline-none"
-                />
-                <p className="text-[11px] text-brand-muted mt-1">
-                  Adjust test amount to preview real-time tax rounding.
-                </p>
-              </div>
-
-              {livePreview && (
-                <div className="p-3 bg-white rounded-2xl border border-brand-border space-y-1.5 text-xs">
-                  <div className="flex justify-between text-brand-muted">
-                    <span>Subtotal:</span>
-                    <span>₹{testSubtotal.toFixed(2)}</span>
-                  </div>
-                  <div className="flex justify-between text-brand-muted">
-                    <span>CGST ({livePreview.taxBreakdown.cgst_rate}%):</span>
-                    <span>₹{livePreview.taxBreakdown.cgst_amount.toFixed(2)}</span>
-                  </div>
-                  <div className="flex justify-between text-brand-muted">
-                    <span>SGST ({livePreview.taxBreakdown.sgst_rate}%):</span>
-                    <span>₹{livePreview.taxBreakdown.sgst_amount.toFixed(2)}</span>
-                  </div>
-                  <div className="flex justify-between font-heading font-extrabold text-brand-black pt-1 border-t border-brand-border text-sm">
-                    <span>Final Amount:</span>
-                    <span>₹{livePreview.totalPayable.toFixed(2)}</span>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
         {/* Save Bar */}
         <div className="flex items-center justify-end gap-3 pt-2">
           <Button
@@ -381,7 +461,7 @@ export const AdminSettings: React.FC = () => {
             isLoading={isSaving}
             leftIcon={<Save className="w-4 h-4" />}
           >
-            Save All Cafe & Tax Settings
+            Save Operations & Restaurant Settings
           </Button>
         </div>
       </form>

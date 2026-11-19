@@ -21,6 +21,7 @@ interface PaymentGatewayModalProps {
   orderNumber: string;
   amount: number;
   paymentMethod: PaymentMethod;
+  guestAccessToken?: string;
   onPaymentSuccess: (transaction: PaymentTransaction) => void;
   onPaymentFailure: (errorMsg: string) => void;
 }
@@ -32,6 +33,7 @@ export const PaymentGatewayModal: React.FC<PaymentGatewayModalProps> = ({
   orderNumber,
   amount,
   paymentMethod,
+  guestAccessToken,
   onPaymentSuccess,
   onPaymentFailure,
 }) => {
@@ -57,6 +59,7 @@ export const PaymentGatewayModal: React.FC<PaymentGatewayModalProps> = ({
         orderId,
         amount,
         paymentMethod,
+        guestAccessToken,
         shouldFail: shouldSimulateFailure,
       });
 
@@ -151,7 +154,7 @@ export const PaymentGatewayModal: React.FC<PaymentGatewayModalProps> = ({
                       Open Google Pay, PhonePe, or Paytm simulator
                     </p>
                     <p className="text-[10px] text-brand-muted mt-1">
-                      UPI ID: <code className="font-mono text-brand-black">hangoutcafe@upi</code>
+                      UPI ID: <code className="font-mono text-brand-black">hangout@upi</code>
                     </p>
                   </div>
                 </div>

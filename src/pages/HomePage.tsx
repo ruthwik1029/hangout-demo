@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useOrderMode } from '../context/OrderModeContext';
 import { useCart } from '../context/CartContext';
-import { MenuItem, MenuCategory } from '../types';
+import { fetchCafeSettings } from '../lib/supabase';
+import { MenuItem, MenuCategory, CafeSettings } from '../types';
 import { Button } from '../components/common/Button';
 import { MenuItemCard } from '../components/menu/MenuItemCard';
 import { TakeawayNoticeBanner } from '../components/layout/TakeawayNoticeBanner';
@@ -11,13 +12,14 @@ import {
   ShoppingBag,
   ArrowRight,
   Sparkles,
-  Coffee,
+  Flame,
   Heart,
   Clock,
   MapPin,
   QrCode,
   ShieldCheck,
   ChevronRight,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface HomePageProps {
@@ -36,6 +38,11 @@ export const HomePage: React.FC<HomePageProps> = ({
   const { mode, setMode, currentTable } = useOrderMode();
   const { addItem } = useCart();
   const navigate = useNavigate();
+  const [settings, setSettings] = useState<CafeSettings | null>(null);
+
+  useEffect(() => {
+    fetchCafeSettings().then(setSettings);
+  }, []);
 
   // Featured and specials
   const todaysSpecials = menuItems.filter((i) => i.is_today_special);
@@ -47,6 +54,33 @@ export const HomePage: React.FC<HomePageProps> = ({
 
   return (
     <div className="space-y-16 sm:space-y-24 pb-16">
+      {/* Dynamic Announcement Banner from Website CMS */}
+      {settings?.announcement_banner?.is_enabled && settings.announcement_banner.text && (
+        <div className="bg-brand-black text-brand-yellow px-4 py-2.5 text-center text-xs font-heading font-bold flex items-center justify-center gap-2 border-b border-brand-yellow/30 shadow-xs">
+          <Sparkles className="w-3.5 h-3.5 text-brand-yellow animate-pulse" />
+          <span>{settings.announcement_banner.text}</span>
+        </div>
+      )}
+
+      {/* Online Ordering Paused Warning Notice */}
+      {settings?.is_online_ordering_paused && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-4">
+          <div className="p-4 bg-amber-500/15 border-2 border-amber-500/50 rounded-3xl flex items-center gap-3 text-amber-950 font-medium text-xs sm:text-sm shadow-xs">
+            <AlertTriangle className="w-5 h-5 text-amber-700 shrink-0" />
+            <div>
+              <span className="font-heading font-extrabold uppercase tracking-wide mr-2 text-amber-900">
+                Online Ordering Notice:
+              </span>
+              <span>
+                {settings.order_pause_reason ||
+                  settings.pause_ordering_message ||
+                  'Online ordering is currently paused by restaurant management. Please visit our counter in person.'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 1. Hero Section */}
       <section className="relative overflow-hidden pt-6 sm:pt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -57,21 +91,28 @@ export const HomePage: React.FC<HomePageProps> = ({
               <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-soft-yellow/80 border border-brand-yellow/60 shadow-sm">
                 <span className="w-2 h-2 rounded-full bg-brand-black animate-pulse" />
                 <span className="text-xs font-heading font-extrabold uppercase tracking-wider text-brand-black">
-                  Youthful • Premium • Modern Cafe
+                  Rotisserie • Char-Grill • Flaky Murtabak
                 </span>
               </div>
 
               {/* Headline */}
               <h1 className="font-heading font-extrabold text-4xl sm:text-6xl lg:text-7xl tracking-tight text-brand-black leading-[1.08]">
-                Where specialty brews meet{' '}
-                <span className="relative inline-block text-brand-black underline decoration-brand-yellow decoration-wavy decoration-from-font">
-                  artisanal bites.
-                </span>
+                {settings?.hero_headline ? (
+                  settings.hero_headline
+                ) : (
+                  <>
+                    Authentic Flame-Roasted{' '}
+                    <span className="relative inline-block text-brand-black underline decoration-brand-yellow decoration-wavy decoration-from-font">
+                      Shawarma & Grills.
+                    </span>
+                  </>
+                )}
               </h1>
 
               {/* Subtitle */}
               <p className="text-base sm:text-lg text-brand-charcoal/80 max-w-xl font-sans leading-relaxed">
-                Experience single-origin roasts, 36-hour slow fermented sourdough melts, smashed gourmet burgers, and silky matcha in an elegant cafe ambiance.
+                {settings?.hero_subheadline ||
+                  'Hand-stacked chicken rotisserie, authentic garlic toum, freshly griddled flaky chicken Murtabak, and golden crispy chicken starters.'}
               </p>
 
               {/* Mode Selector Card */}
@@ -105,7 +146,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                         <UtensilsCrossed className="w-5 h-5" />
                       </div>
                       <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-brand-black/5 text-brand-black">
-                        At Cafe
+                        At Restaurant
                       </span>
                     </div>
                     <p className="font-heading font-bold text-sm sm:text-base text-brand-black">
@@ -193,8 +234,8 @@ export const HomePage: React.FC<HomePageProps> = ({
                 {/* Main Hero Photo */}
                 <div className="relative z-10 rounded-3xl overflow-hidden shadow-dark-float border-4 border-white aspect-[4/5] bg-brand-black">
                   <img
-                    src="https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&w=1000&q=80"
-                    alt="HANGOUT Cafe ambiance and artisanal food"
+                    src={settings?.hero_image_url || '/images/food/item-01-classic-shawarma-salad.jpg'}
+                    alt="HANGOUT Authentic flame-roasted chicken shawarma"
                     className="w-full h-full object-cover"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
@@ -203,28 +244,28 @@ export const HomePage: React.FC<HomePageProps> = ({
                   <div className="absolute bottom-6 left-6 right-6 p-4 rounded-2xl bg-white/95 backdrop-blur-md border border-white/20 shadow-lg text-brand-black flex items-center justify-between">
                     <div>
                       <p className="text-[10px] font-bold uppercase tracking-wider text-brand-muted">
-                        House Special Brew
+                        House Specialty
                       </p>
                       <p className="font-heading font-extrabold text-sm text-brand-black">
-                        Iced Spanish Latte & Cold Foam
+                        Classic Chicken Shawarma (No Salad)
                       </p>
                     </div>
                     <span className="font-heading font-black text-brand-black text-sm bg-brand-yellow px-2.5 py-1 rounded-xl">
-                      ₹240
+                      ₹180
                     </span>
                   </div>
                 </div>
 
                 {/* Floating Micro-Badge Top Left */}
                 <div className="absolute -top-4 -left-4 z-20 bg-brand-black text-brand-yellow px-4 py-2.5 rounded-2xl shadow-premium border border-brand-charcoal flex items-center gap-2">
-                  <Coffee className="w-4 h-4 text-brand-yellow" />
-                  <span className="font-heading font-bold text-xs">100% Arabica Specialty</span>
+                  <Flame className="w-4 h-4 text-brand-yellow" />
+                  <span className="font-heading font-bold text-xs">100% Rotisserie Chicken</span>
                 </div>
 
                 {/* Floating Micro-Badge Bottom Right */}
                 <div className="absolute -bottom-4 -right-4 z-20 bg-brand-yellow text-brand-black px-4 py-2.5 rounded-2xl shadow-premium border border-brand-black/10 flex items-center gap-2">
                   <Sparkles className="w-4 h-4" />
-                  <span className="font-heading font-bold text-xs">Fresh Sourdough Bakes</span>
+                  <span className="font-heading font-bold text-xs">Fresh Garlic Toum</span>
                 </div>
               </div>
             </div>
@@ -369,7 +410,7 @@ export const HomePage: React.FC<HomePageProps> = ({
                 Seamless QR Table Ordering
               </h3>
               <p className="text-sm text-brand-muted leading-relaxed font-sans">
-                Sit down at any table in our indoor cafe, sunny patio, or mezzanine lounge. Simply scan the QR code to lock in your table number and order straight from your mobile screen.
+                Sit down at any dining table. Simply scan the table QR code to lock in your table number and order hot shawarmas, murtabak, and starters straight from your mobile screen.
               </p>
             </div>
             <div className="pt-6">
@@ -424,13 +465,13 @@ export const HomePage: React.FC<HomePageProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
           <div className="relative rounded-3xl overflow-hidden aspect-[4/3] bg-brand-charcoal shadow-premium">
             <img
-              src="https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?auto=format&fit=crop&w=900&q=80"
-              alt="Artisanal barista preparing coffee at HANGOUT"
+              src="/images/food/item-02-grilled-shawarma-salad.jpg"
+              alt="Authentic shawarma rotisserie cooking at HANGOUT"
               className="w-full h-full object-cover"
             />
             <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
             <div className="absolute bottom-6 left-6 text-white">
-              <p className="font-heading font-bold text-lg">Indiranagar Roastery</p>
+              <p className="font-heading font-bold text-lg">Indiranagar Kitchen</p>
               <p className="text-xs text-gray-300">100 Feet Road, Bengaluru</p>
             </div>
           </div>
@@ -441,19 +482,19 @@ export const HomePage: React.FC<HomePageProps> = ({
               <span>Our Philosophy</span>
             </div>
             <h2 className="font-heading font-extrabold text-3xl sm:text-5xl text-brand-black leading-tight">
-              Crafted with intention. Built for connection.
+              Slow-roasted to perfection. Carved fresh daily.
             </h2>
             <p className="text-sm sm:text-base text-brand-charcoal/80 leading-relaxed font-sans">
-              HANGOUT was born out of a desire to create a modern sanctuary where youthful energy meets elevated cafe standards. We roast ethically sourced high-elevation Arabica beans, ferment our country sourdough loaves for 36 hours, and grind our burger patties fresh in-house every morning.
+              HANGOUT is dedicated to authentic street-style shawarma, griddled chicken murtabak, and crispy chicken comfort foods. We marinate our whole cuts of fresh chicken for 24 hours in authentic Middle Eastern spices, stack each vertical spit daily, and serve every roll toasted with homemade garlic toum.
             </p>
             <div className="grid grid-cols-3 gap-4 pt-2 border-t border-brand-border">
               <div>
-                <p className="font-heading font-black text-2xl text-brand-black">100%</p>
-                <p className="text-xs text-brand-muted mt-0.5">Specialty Arabica</p>
+                <p className="font-heading font-black text-2xl text-brand-black">24 hrs</p>
+                <p className="text-xs text-brand-muted mt-0.5">Spice Marination</p>
               </div>
               <div>
-                <p className="font-heading font-black text-2xl text-brand-black">36 hrs</p>
-                <p className="text-xs text-brand-muted mt-0.5">Slow Ferment</p>
+                <p className="font-heading font-black text-2xl text-brand-black">100%</p>
+                <p className="text-xs text-brand-muted mt-0.5">Whole Chicken Cuts</p>
               </div>
               <div>
                 <p className="font-heading font-black text-2xl text-brand-black">0 min</p>
@@ -486,25 +527,25 @@ export const HomePage: React.FC<HomePageProps> = ({
               <h3 className="font-heading font-bold text-xl text-brand-black">Timings</h3>
               <div className="space-y-1 text-xs sm:text-sm text-brand-charcoal font-sans">
                 <p>
-                  <strong className="font-bold text-brand-black">Mon — Fri:</strong> 8:00 AM – 11:00 PM
+                  <strong className="font-bold text-brand-black">Mon — Sun:</strong> 12:00 PM – 11:30 PM
                 </p>
                 <p>
-                  <strong className="font-bold text-brand-black">Sat — Sun:</strong> 8:00 AM – 12:00 Midnight
+                  <strong className="font-bold text-brand-black">Late Night Spit:</strong> Till Midnight on Weekends
                 </p>
               </div>
-              <p className="text-xs text-emerald-700 font-semibold">Kitchen serves all day long</p>
+              <p className="text-xs text-emerald-700 font-semibold">Rotisserie spit active all day</p>
             </div>
 
             <div className="space-y-3">
               <div className="w-10 h-10 rounded-2xl bg-brand-soft-yellow flex items-center justify-center text-brand-black">
                 <ShieldCheck className="w-5 h-5" />
               </div>
-              <h3 className="font-heading font-bold text-xl text-brand-black">Reservations & Info</h3>
+              <h3 className="font-heading font-bold text-xl text-brand-black">Orders & Inquiries</h3>
               <p className="text-xs sm:text-sm text-brand-charcoal font-sans">
-                Direct phone: <strong className="font-bold text-brand-black">+91 98765 43210</strong>
+                Direct phone: <strong className="font-bold text-brand-black">+91 80 4567 8900</strong>
               </p>
               <p className="text-xs sm:text-sm text-brand-charcoal font-sans">
-                Email: <strong className="font-bold text-brand-black">hello@hangoutcafe.com</strong>
+                Email: <strong className="font-bold text-brand-black">contact@hangout.in</strong>
               </p>
               <div className="pt-1">
                 <Button variant="secondary" size="sm" onClick={() => navigate('/menu')}>

@@ -8,6 +8,7 @@ import { DiningOrderApprovalCard } from '../../components/staff/DiningOrderAppro
 import { RejectionReasonModal } from '../../components/staff/RejectionReasonModal';
 import { WaiterOrderModal } from '../../components/staff/WaiterOrderModal';
 import { BillSplittingModal } from '../../components/staff/BillSplittingModal';
+import { CashierReceiptModal } from '../../components/staff/CashierReceiptModal';
 import { Button } from '../../components/common/Button';
 import {
   fetchCafeTables,
@@ -28,6 +29,7 @@ import {
   Sparkles,
   Filter,
   CheckCircle2,
+  Printer,
 } from 'lucide-react';
 
 export const StaffPortal: React.FC = () => {
@@ -49,6 +51,7 @@ export const StaffPortal: React.FC = () => {
   const [selectedTableForOrder, setSelectedTableForOrder] = useState<CafeTable | null>(null);
   const [orderToReject, setOrderToReject] = useState<Order | null>(null);
   const [selectedOrderForBill, setSelectedOrderForBill] = useState<Order | null>(null);
+  const [orderForReceipt, setOrderForReceipt] = useState<Order | null>(null);
   const [existingOrderToAppend, setExistingOrderToAppend] = useState<Order | null>(null);
 
   // Load all initial operational data
@@ -153,7 +156,7 @@ export const StaffPortal: React.FC = () => {
       const approved = await approveDiningOrder(
         orderId,
         currentUser?.id || 'u-waiter-01',
-        currentUser?.full_name || 'Rahul Verma'
+        currentUser?.full_name || 'Floor Staff'
       );
       showToast({
         type: 'success',
@@ -174,7 +177,7 @@ export const StaffPortal: React.FC = () => {
         orderId,
         reason,
         currentUser?.id || 'u-waiter-01',
-        currentUser?.full_name || 'Rahul Verma'
+        currentUser?.full_name || 'Floor Staff'
       );
       showToast({
         type: 'info',
@@ -352,7 +355,7 @@ export const StaffPortal: React.FC = () => {
                 Customer Dining Orders Awaiting Approval
               </h2>
               <p className="text-xs text-brand-muted mt-0.5">
-                Incoming orders placed by customers at cafe tables must be acknowledged by floor crew before being sent to the kitchen.
+                Incoming orders placed by customers at dining tables must be acknowledged by floor crew before being sent to the kitchen.
               </p>
             </div>
             <span className="font-mono text-xs font-bold px-3 py-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
@@ -497,6 +500,14 @@ export const StaffPortal: React.FC = () => {
                       >
                         Bill / Split (₹{order.total_amount.toFixed(2)})
                       </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setOrderForReceipt(order)}
+                        leftIcon={<Printer className="w-3.5 h-3.5" />}
+                      >
+                        Print Receipt
+                      </Button>
                     </div>
                   </div>
                 );
@@ -573,15 +584,26 @@ export const StaffPortal: React.FC = () => {
                     </div>
                   </div>
 
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => setSelectedOrderForBill(order)}
-                    leftIcon={<Receipt className="w-3.5 h-3.5" />}
-                  >
-                    Open Billing & Split Modal
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => setSelectedOrderForBill(order)}
+                      leftIcon={<Receipt className="w-3.5 h-3.5" />}
+                    >
+                      Split Bill
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => setOrderForReceipt(order)}
+                      leftIcon={<Printer className="w-3.5 h-3.5" />}
+                    >
+                      Print Receipt
+                    </Button>
+                  </div>
                 </div>
               ))}
           </div>
@@ -644,6 +666,13 @@ export const StaffPortal: React.FC = () => {
         onOrderUpdated={() => {
           loadData();
         }}
+      />
+
+      {/* Modal: Cashier Bill Receipt & Printing */}
+      <CashierReceiptModal
+        order={orderForReceipt}
+        isOpen={Boolean(orderForReceipt)}
+        onClose={() => setOrderForReceipt(null)}
       />
     </div>
   );

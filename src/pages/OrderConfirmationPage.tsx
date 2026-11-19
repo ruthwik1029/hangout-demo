@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { fetchOrderById } from '../lib/supabase';
 import { Order } from '../types';
 import { Button } from '../components/common/Button';
+import { ThermalPrinterAnimation } from '../components/receipt/ThermalPrinterAnimation';
 import {
   CheckCircle2,
   Clock,
@@ -13,6 +14,7 @@ import {
   FileCheck,
   Printer,
   ChevronRight,
+  MessageCircle,
 } from 'lucide-react';
 
 export const OrderConfirmationPage: React.FC = () => {
@@ -20,6 +22,7 @@ export const OrderConfirmationPage: React.FC = () => {
   const navigate = useNavigate();
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isThermalPrinterOpen, setIsThermalPrinterOpen] = useState(false);
 
   useEffect(() => {
     if (!orderId) return;
@@ -57,6 +60,22 @@ export const OrderConfirmationPage: React.FC = () => {
   }
 
   const isPaid = order.payment_status === 'PAID';
+
+  const handleWhatsAppShare = () => {
+    const cafePhone = '919876543210';
+    const itemsText = (order.items || [])
+      .map((it) => `• ${it.quantity}x ${it.item_name_snapshot} (₹${(it.total_price || (it.unit_price_snapshot || 0) * it.quantity).toFixed(2)})`)
+      .join('\n');
+    const message = `*HANGOUT Cafe Order Confirmation*\n` +
+      `*Order #:* ${order.order_number}\n` +
+      `*Mode:* ${order.order_type === 'DINING' ? `Dine-In (Table ${order.table_number_snapshot || 'Assigned'})` : `Takeaway (${order.pickup_slot_snapshot || 'Counter Collection'})`}\n` +
+      `*Customer:* ${order.customer_name_snapshot}\n\n` +
+      `*Items:*\n${itemsText}\n\n` +
+      `*Total:* ₹${order.total_amount.toFixed(2)}\n` +
+      `*Status:* ${order.order_status} | ${order.payment_status}\n\n` +
+      `Track Order: ${window.location.origin}/track/${order.id}`;
+    window.open(`https://wa.me/${cafePhone}?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
+  };
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-10 space-y-8 pb-24">
@@ -242,8 +261,18 @@ export const OrderConfirmationPage: React.FC = () => {
           <Button
             variant="outline"
             size="lg"
+            className="w-full sm:w-auto text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+            onClick={handleWhatsAppShare}
+            leftIcon={<MessageCircle className="w-4 h-4 text-emerald-600" />}
+          >
+            Share on WhatsApp
+          </Button>
+
+          <Button
+            variant="outline"
+            size="lg"
             className="w-full sm:w-auto"
-            onClick={() => window.print()}
+            onClick={() => setIsThermalPrinterOpen(true)}
             leftIcon={<Printer className="w-4 h-4" />}
           >
             Print Receipt
@@ -259,6 +288,14 @@ export const OrderConfirmationPage: React.FC = () => {
           </Button>
         </div>
       </div>
+
+      {order && (
+        <ThermalPrinterAnimation
+          order={order}
+          isOpen={isThermalPrinterOpen}
+          onClose={() => setIsThermalPrinterOpen(false)}
+        />
+      )}
     </div>
   );
 };

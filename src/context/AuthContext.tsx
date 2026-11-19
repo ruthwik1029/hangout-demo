@@ -33,7 +33,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     (role: UserRole) => {
       const profile = DEMO_PROFILES.find((p) => p.role_id === role) || {
         id: `demo-${role}`,
-        email: `${role}@hangoutcafe.com`,
+        email: `${role}@hangout.in`,
         full_name: `${role.toUpperCase()} User`,
         role_id: role,
         is_active: true,

@@ -201,7 +201,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ onOpenTableSelector }) =
             description={`Add delicious items from the menu to build your ${
               mode === 'dining' ? 'table dine-in order' : 'self-pickup order'
             }.`}
-            actionText="Explore Cafe Menu"
+            actionText="Explore Menu"
             onAction={() => {
               closeCart();
               navigate('/menu');

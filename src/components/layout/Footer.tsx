@@ -8,7 +8,7 @@ import {
   ShoppingBag,
   Sparkles,
   Shield,
-  Coffee,
+  Flame,
 } from 'lucide-react';
 import { EXACT_TAKEAWAY_NOTICE } from '../../context/OrderModeContext';
 
@@ -30,7 +30,7 @@ export const Footer: React.FC = () => {
               </span>
             </div>
             <p className="text-xs text-brand-muted leading-relaxed font-sans">
-              Specialty Coffee, slow-fermented sourdough, handcrafted smash burgers & modern cafe culture. Designed for real food lovers.
+              Authentic flame-roasted chicken shawarmas, crispy chicken starters & flaky pan-fried Murtabak. Prepared fresh to order with house garlic toum.
             </p>
             <div className="flex items-center gap-3 pt-2">
               <a
@@ -47,8 +47,8 @@ export const Footer: React.FC = () => {
                 </svg>
               </a>
               <div className="flex items-center gap-1.5 text-xs text-brand-yellow font-heading font-semibold bg-brand-charcoal px-3 py-1.5 rounded-xl border border-brand-charcoal">
-                <Coffee className="w-3.5 h-3.5" />
-                <span>Single Origin Daily</span>
+                <Flame className="w-3.5 h-3.5" />
+                <span>Fresh Off The Rotisserie</span>
               </div>
             </div>
           </div>
@@ -84,8 +84,8 @@ export const Footer: React.FC = () => {
               <span>Visit HANGOUT</span>
             </h4>
             <div className="space-y-2 text-xs text-gray-300 leading-relaxed">
-              <p>Plot 42, 100 Feet Road, Indiranagar</p>
-              <p>Bengaluru, Karnataka 560038</p>
+              <p>Indiranagar</p>
+              <p>Bengaluru, Karnataka</p>
               <div className="pt-2 space-y-1 text-brand-muted">
                 <p className="flex items-center gap-2">
                   <Phone className="w-3.5 h-3.5 text-brand-yellow" />
@@ -95,8 +95,8 @@ export const Footer: React.FC = () => {
                 </p>
                 <p className="flex items-center gap-2">
                   <Mail className="w-3.5 h-3.5 text-brand-yellow" />
-                  <a href="mailto:hello@hangoutcafe.com" className="hover:text-white">
-                    hello@hangoutcafe.com
+                  <a href="mailto:contact@hangout.in" className="hover:text-white">
+                    contact@hangout.in
                   </a>
                 </p>
               </div>
@@ -112,7 +112,7 @@ export const Footer: React.FC = () => {
             <div className="p-3.5 rounded-2xl bg-brand-charcoal border border-brand-charcoal text-xs text-gray-300 space-y-2">
               <div className="flex items-center gap-1.5 text-brand-yellow font-bold text-[11px] uppercase tracking-wide">
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>Pickup Only Cafe</span>
+                <span>Pickup & Dine-In Restaurant</span>
               </div>
               <p className="text-[11px] leading-relaxed text-gray-400 font-sans">
                 {EXACT_TAKEAWAY_NOTICE}

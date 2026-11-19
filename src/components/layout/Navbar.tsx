@@ -39,11 +39,16 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenTableSelector, onOpenProfi
               H
             </div>
             <div className="flex flex-col">
-              <span className="font-heading font-extrabold text-2xl tracking-tighter text-brand-black leading-none">
-                HANGOUT
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="font-heading font-extrabold text-2xl tracking-tighter text-brand-black leading-none">
+                  HANGOUT
+                </span>
+                <span className="px-1.5 py-0.5 rounded text-[9px] font-heading font-extrabold tracking-wider uppercase bg-brand-yellow/40 text-brand-black border border-brand-yellow">
+                  DEMO
+                </span>
+              </div>
               <span className="text-[10px] tracking-widest uppercase font-semibold text-brand-muted">
-                Cafe & Eatery
+                Shawarma & Grills
               </span>
             </div>
           </Link>

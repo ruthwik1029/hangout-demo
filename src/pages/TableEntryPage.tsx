@@ -63,7 +63,7 @@ export const TableEntryPage: React.FC = () => {
           Invalid Table Code: {tableNumber}
         </h2>
         <p className="text-xs text-brand-muted mt-2 mb-6">
-          We could not locate this table in our cafe registry. Please ask a staff member or choose a table manually.
+          We could not locate this table in our restaurant registry. Please ask a staff member or choose a table manually.
         </p>
         <div className="flex flex-col gap-2">
           <Button variant="primary" size="md" onClick={() => navigate('/menu')}>
@@ -95,7 +95,7 @@ export const TableEntryPage: React.FC = () => {
       <div className="my-6 p-4 rounded-2xl bg-brand-warm-white border border-brand-border text-left space-y-2">
         <div className="flex items-center justify-between text-xs font-semibold text-brand-black">
           <span className="flex items-center gap-1.5 text-brand-muted">
-            <MapPin className="w-3.5 h-3.5" /> Cafe Section
+            <MapPin className="w-3.5 h-3.5" /> Dining Section
           </span>
           <span>{matchedTable.section}</span>
         </div>

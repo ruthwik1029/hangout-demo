@@ -45,7 +45,7 @@ export const KDSNav: React.FC<KDSNavProps> = ({
         <div>
           <div className="flex items-center gap-2 text-xs font-heading font-bold text-amber-500 uppercase tracking-wider mb-1">
             <Flame className="w-4 h-4 text-amber-500 fill-amber-500" />
-            <span>HANGOUT KDS • Head Chef & Line Station • {currentUser?.full_name || 'Kitchen Staff'}</span>
+            <span>HANGOUT KDS • Line Stations & Kitchen Operations • {currentUser?.full_name || 'Staff Member'}</span>
           </div>
           <h1 className="font-heading font-extrabold text-2xl sm:text-3xl text-brand-black flex items-center gap-3">
             <span>Kitchen Display System (KDS)</span>

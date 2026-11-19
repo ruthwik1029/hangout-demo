@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { motion } from 'framer-motion';
 import { useCart } from '../context/CartContext';
 import { useOrderMode } from '../context/OrderModeContext';
 import { useCustomer } from '../context/CustomerContext';
@@ -8,8 +9,9 @@ import { Button } from '../components/common/Button';
 import { VegIndicator, NonVegIndicator } from '../components/common/Badge';
 import { PaymentGatewayModal } from '../components/checkout/PaymentGatewayModal';
 import { TableSelectorModal } from '../components/dining/TableSelectorModal';
-import { createOrder } from '../lib/supabase';
-import { PaymentMethod, PaymentTransaction } from '../types';
+import { ThermalPrinterAnimation } from '../components/receipt/ThermalPrinterAnimation';
+import { createOrder, fetchCafeSettings } from '../lib/supabase';
+import { PaymentMethod, PaymentTransaction, Order, CafeSettings } from '../types';
 import {
   ArrowLeft,
   UtensilsCrossed,
@@ -24,6 +26,10 @@ import {
   Banknote,
   Receipt,
   UserCheck,
+  CheckCircle2,
+  Sparkles,
+  ChevronRight,
+  Printer,
 } from 'lucide-react';
 
 export const CheckoutPage: React.FC = () => {
@@ -41,7 +47,7 @@ export const CheckoutPage: React.FC = () => {
   } = useCart();
 
   const { mode, currentTable, takeawayNotice } = useOrderMode();
-  const { currentCustomer, setCustomer, registerGuest } = useCustomer();
+  const { currentCustomer } = useCustomer();
   const { showToast } = useToast();
   const navigate = useNavigate();
 
@@ -66,6 +72,14 @@ export const CheckoutPage: React.FC = () => {
   // Payment Selection
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod>('UPI');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [pendingOrder, setPendingOrder] = useState<Order | null>(null);
+  const [completedOrder, setCompletedOrder] = useState<Order | null>(null);
+  const [isThermalPrinterOpen, setIsThermalPrinterOpen] = useState(false);
+  const [cafeSettings, setCafeSettings] = useState<CafeSettings | null>(null);
+
+  React.useEffect(() => {
+    fetchCafeSettings().then(setCafeSettings);
+  }, []);
 
   // Helper validation
   const cleanMobile = customerMobile.replace(/\D/g, '');
@@ -88,6 +102,18 @@ export const CheckoutPage: React.FC = () => {
         type: 'error',
         title: 'Empty Cart',
         message: 'Your cart has no items. Add items before checking out.',
+      });
+      return false;
+    }
+
+    if (cafeSettings?.is_online_ordering_paused) {
+      showToast({
+        type: 'warning',
+        title: 'Ordering Paused',
+        message:
+          cafeSettings.order_pause_reason ||
+          cafeSettings.pause_ordering_message ||
+          'Online ordering is currently suspended. Please visit in person.',
       });
       return false;
     }
@@ -127,84 +153,58 @@ export const CheckoutPage: React.FC = () => {
   const handleProceedToPayment = async () => {
     if (!validateOrder()) return;
 
-    // Ensure customer session exists or save profile
-    const normalizedMobile = cleanMobile.length === 12 ? cleanMobile.slice(2) : cleanMobile;
-    let customerId = currentCustomer?.id;
-    if (!customerId) {
-      const saved = await registerGuest(customerName.trim(), normalizedMobile, customerEmail.trim() || undefined);
-      if (saved) {
-        customerId = saved.id;
-      }
-    } else if (currentCustomer) {
-      setCustomer({
-        ...currentCustomer,
-        full_name: customerName.trim(),
-        mobile_number: normalizedMobile,
-        email: customerEmail.trim() || undefined,
-      });
-    }
-
-    // For online methods (UPI or CARD), open simulated gateway modal
-    if (selectedPaymentMethod === 'UPI' || selectedPaymentMethod === 'CARD') {
-      setIsPaymentModalOpen(true);
-    } else {
-      // Pay at Counter / After Meal (CASH)
-      await submitFinalOrder({
-        method: 'CASH',
-        paymentStatus: 'UNPAID',
-      });
-    }
-  };
-
-  const submitFinalOrder = async (opts: {
-    method: PaymentMethod;
-    paymentStatus: 'PAID' | 'UNPAID';
-    transaction?: PaymentTransaction;
-  }) => {
     setIsSubmitting(true);
-    const normalizedMobile = cleanMobile.length === 12 ? cleanMobile.slice(2) : cleanMobile;
-
     try {
-      const order = await createOrder({
-        customerId: currentCustomer?.id,
-        customerName: customerName.trim(),
-        customerMobile: normalizedMobile,
-        customerEmail: customerEmail.trim() || undefined,
-        orderType: mode === 'dining' ? 'DINING' : 'TAKEAWAY',
-        tableId: mode === 'dining' ? currentTable?.id : undefined,
-        tableNumberSnapshot: mode === 'dining' ? currentTable?.table_number : undefined,
-        pickupSlotSnapshot:
-          mode === 'takeaway'
-            ? pickupType === 'asap'
-              ? 'ASAP (~15-20 mins)'
-              : `Scheduled: ${scheduledTime}`
-            : undefined,
-        cartItems: activeCart,
-        subtotal,
-        discountAmount,
-        discountCode: appliedDiscount?.code,
-        taxAmount,
-        taxBreakdown,
-        totalAmount: grandTotal,
-        paymentMethod: opts.method,
-        paymentStatus: opts.paymentStatus,
-        notes: specialOrderNote.trim() || undefined,
-        initialTransaction: opts.transaction,
-      });
+      // S1: Ensure a real database UUID exists before any UUID-based payment authorization
+      let orderToPay = pendingOrder;
 
-      clearActiveCart();
-      showToast({
-        type: 'success',
-        title: 'Order Placed!',
-        message: `Order #${order.order_number} has been placed successfully.`,
-      });
+      if (!orderToPay) {
+        const normalizedMobile = cleanMobile.length === 12 ? cleanMobile.slice(2) : cleanMobile;
+        orderToPay = await createOrder({
+          customerId: currentCustomer?.id,
+          customerName: customerName.trim(),
+          customerMobile: normalizedMobile,
+          customerEmail: customerEmail.trim() || undefined,
+          orderType: mode === 'dining' ? 'DINING' : 'TAKEAWAY',
+          tableId: mode === 'dining' ? currentTable?.id : undefined,
+          tableNumberSnapshot: mode === 'dining' ? currentTable?.table_number : undefined,
+          pickupSlotSnapshot:
+            mode === 'takeaway'
+              ? pickupType === 'asap'
+                ? 'ASAP (~15-20 mins)'
+                : `Scheduled: ${scheduledTime}`
+              : undefined,
+          cartItems: activeCart,
+          subtotal,
+          discountAmount,
+          discountCode: appliedDiscount?.code,
+          taxAmount,
+          taxBreakdown,
+          totalAmount: grandTotal,
+          paymentMethod: selectedPaymentMethod,
+          paymentStatus: 'UNPAID',
+          notes: specialOrderNote.trim() || undefined,
+        });
+        setPendingOrder(orderToPay);
+      }
 
-      navigate(`/order-confirmation/${order.id}`);
+      if (selectedPaymentMethod === 'UPI' || selectedPaymentMethod === 'CARD') {
+        setIsPaymentModalOpen(true);
+      } else {
+        // Pay at Counter / After Meal (CASH)
+        clearActiveCart();
+        setCompletedOrder(orderToPay);
+        showToast({
+          type: 'success',
+          title: 'Order Placed!',
+          message: `Order #${orderToPay.order_number} recorded. Pay at counter when collecting.`,
+        });
+      }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to place order';
+      const message = err instanceof Error ? err.message : 'Failed to create order';
       showToast({
         type: 'error',
-        title: 'Order Placement Failed',
+        title: 'Order Creation Failed',
         message,
       });
     } finally {
@@ -212,12 +212,20 @@ export const CheckoutPage: React.FC = () => {
     }
   };
 
-  const handlePaymentSuccess = async (txn: PaymentTransaction) => {
+  const handlePaymentSuccess = async (_txn: PaymentTransaction) => {
+    if (!pendingOrder) return;
     setIsPaymentModalOpen(false);
-    await submitFinalOrder({
-      method: selectedPaymentMethod,
-      paymentStatus: 'PAID',
-      transaction: txn,
+    clearActiveCart();
+
+    const finalizedOrder: Order = {
+      ...pendingOrder,
+      payment_status: 'PAID',
+    };
+    setCompletedOrder(finalizedOrder);
+    showToast({
+      type: 'success',
+      title: 'Payment Successful!',
+      message: `Order #${finalizedOrder.order_number} has been paid and confirmed.`,
     });
   };
 
@@ -227,7 +235,116 @@ export const CheckoutPage: React.FC = () => {
       title: 'Payment Simulation Failed',
       message: errorMsg,
     });
+    // pendingOrder remains intact, so user can retry directly without creating duplicate orders
   };
+
+  // Section 2: Payment Success Experience
+  if (completedOrder) {
+    return (
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-12 space-y-8">
+        {/* Animated Checkmark & Success Banner */}
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="text-center space-y-4"
+        >
+          <div className="w-20 h-20 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto shadow-lg shadow-emerald-500/20">
+            <CheckCircle2 className="w-12 h-12" />
+          </div>
+
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold uppercase tracking-wider">
+            <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+            {completedOrder.payment_status === 'PAID' ? 'Payment Successful' : 'Order Confirmed'}
+          </div>
+
+          <h1 className="font-heading font-black text-3xl sm:text-4xl text-brand-black">
+            {completedOrder.payment_status === 'PAID' ? 'Payment Successful!' : 'Order Placed!'}
+          </h1>
+          <p className="text-xs text-brand-muted max-w-md mx-auto">
+            {completedOrder.payment_status === 'PAID'
+              ? 'Your simulated demo payment has been securely authorized and settled. Zero real money was debited.'
+              : 'Your order has been recorded. Please pay at the counter when collecting or after dining.'}
+          </p>
+        </motion.div>
+
+        {/* Order Details Card */}
+        <div className="p-6 bg-white rounded-3xl border border-brand-border shadow-card-subtle space-y-4">
+          <div className="flex items-center justify-between border-b border-brand-border pb-4">
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-brand-muted">Order Number</span>
+              <p className="font-heading font-black text-2xl text-brand-black">#{completedOrder.order_number}</p>
+            </div>
+            <div className="text-right">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-brand-muted">Amount Paid</span>
+              <p className="font-heading font-black text-2xl text-brand-yellow">₹{completedOrder.total_amount.toFixed(2)}</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="p-3 rounded-2xl bg-brand-warm-white border border-brand-border space-y-1">
+              <span className="text-[10px] uppercase font-bold text-brand-muted block">Payment Method</span>
+              <span className="font-bold text-brand-black">
+                {completedOrder.payment_method === 'UPI'
+                  ? 'UPI Demo'
+                  : completedOrder.payment_method === 'CARD'
+                  ? 'Card Demo'
+                  : 'Pay at Counter'}
+              </span>
+            </div>
+            <div className="p-3 rounded-2xl bg-brand-warm-white border border-brand-border space-y-1">
+              <span className="text-[10px] uppercase font-bold text-brand-muted block">Fulfillment</span>
+              <span className="font-bold text-brand-black">
+                {completedOrder.order_type === 'DINING'
+                  ? `Table ${completedOrder.table_number_snapshot || 'Assigned'}`
+                  : completedOrder.pickup_slot_snapshot || 'Takeaway Counter'}
+              </span>
+            </div>
+          </div>
+
+          <div className="pt-2 text-[10px] text-brand-muted text-center font-mono break-all">
+            DB Reference: {completedOrder.id}
+          </div>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex flex-col sm:flex-row items-center gap-3">
+          <Button
+            variant="primary"
+            size="lg"
+            className="w-full sm:flex-1"
+            onClick={() => setIsThermalPrinterOpen(true)}
+            leftIcon={<Printer className="w-4 h-4" />}
+          >
+            View / Print Digital Bill
+          </Button>
+
+          <Button
+            variant="outline"
+            size="lg"
+            className="w-full sm:flex-1"
+            onClick={() => navigate(`/track/${completedOrder.id}`)}
+            rightIcon={<ChevronRight className="w-4 h-4" />}
+          >
+            Track Order Live
+          </Button>
+        </div>
+
+        <div className="text-center">
+          <Link to="/menu" className="text-xs font-bold text-brand-muted hover:text-brand-black underline">
+            Order More / Back to Menu
+          </Link>
+        </div>
+
+        {/* Thermal Printer Simulation Modal */}
+        <ThermalPrinterAnimation
+          order={completedOrder}
+          isOpen={isThermalPrinterOpen}
+          onClose={() => setIsThermalPrinterOpen(false)}
+        />
+      </div>
+    );
+  }
 
   if (activeCart.length === 0) {
     return (
@@ -401,7 +518,7 @@ export const CheckoutPage: React.FC = () => {
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. Rahul Sharma"
+                  placeholder="Enter your full name"
                   value={customerName}
                   onChange={(e) => setCustomerName(e.target.value)}
                   className="w-full p-2.5 bg-brand-warm-white border border-brand-border rounded-xl text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-brand-yellow"
@@ -674,15 +791,33 @@ export const CheckoutPage: React.FC = () => {
               </span>
             </div>
 
+            {/* Ordering Paused Banner */}
+            {cafeSettings?.is_online_ordering_paused && (
+              <div className="p-3.5 bg-amber-100 border border-amber-300 rounded-2xl text-xs space-y-1">
+                <div className="flex items-center gap-1.5 font-heading font-bold text-amber-900">
+                  <ShieldAlert className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>Online Ordering Paused</span>
+                </div>
+                <p className="text-[11px] text-amber-800">
+                  {cafeSettings.order_pause_reason ||
+                    cafeSettings.pause_ordering_message ||
+                    'Online ordering is currently suspended. Please visit our restaurant counter.'}
+                </p>
+              </div>
+            )}
+
             {/* Submit Action */}
             <Button
               variant="primary"
               size="lg"
               className="w-full"
               isLoading={isSubmitting}
+              disabled={Boolean(cafeSettings?.is_online_ordering_paused) || isSubmitting}
               onClick={handleProceedToPayment}
             >
-              {selectedPaymentMethod === 'CASH'
+              {cafeSettings?.is_online_ordering_paused
+                ? 'Ordering Temporarily Paused'
+                : selectedPaymentMethod === 'CASH'
                 ? `Confirm Order (₹${grandTotal.toFixed(2)} - Pay Later)`
                 : `Pay ₹${grandTotal.toFixed(2)} via ${selectedPaymentMethod} (Demo)`}
             </Button>
@@ -697,16 +832,19 @@ export const CheckoutPage: React.FC = () => {
       />
 
       {/* Payment Gateway Simulation Modal */}
-      <PaymentGatewayModal
-        isOpen={isPaymentModalOpen}
-        onClose={() => setIsPaymentModalOpen(false)}
-        orderId={`temp-ord-${Date.now()}`}
-        orderNumber="NEW"
-        amount={grandTotal}
-        paymentMethod={selectedPaymentMethod}
-        onPaymentSuccess={handlePaymentSuccess}
-        onPaymentFailure={handlePaymentFailure}
-      />
+      {pendingOrder && (
+        <PaymentGatewayModal
+          isOpen={isPaymentModalOpen}
+          onClose={() => setIsPaymentModalOpen(false)}
+          orderId={pendingOrder.id}
+          orderNumber={pendingOrder.order_number}
+          guestAccessToken={pendingOrder.guest_access_token}
+          amount={pendingOrder.total_amount}
+          paymentMethod={selectedPaymentMethod}
+          onPaymentSuccess={handlePaymentSuccess}
+          onPaymentFailure={handlePaymentFailure}
+        />
+      )}
     </div>
   );
 };

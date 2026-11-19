@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { fetchOrderById, fetchMenuItems } from '../lib/supabase';
 import { Order, OrderStatus, MenuItem } from '../types';
 import { useCart } from '../context/CartContext';
 import { useToast } from '../context/ToastContext';
 import { Button } from '../components/common/Button';
+import { ThermalPrinterAnimation } from '../components/receipt/ThermalPrinterAnimation';
 import {
   CheckCircle2,
   ShoppingBag,
@@ -12,6 +13,8 @@ import {
   ArrowLeft,
   RotateCcw,
   AlertCircle,
+  MessageCircle,
+  Printer,
 } from 'lucide-react';
 
 interface TrackingStep {
@@ -21,7 +24,7 @@ interface TrackingStep {
 }
 
 const DINING_STEPS: TrackingStep[] = [
-  { key: 'PENDING', label: 'Order Placed', description: 'Received in cafe system' },
+  { key: 'PENDING', label: 'Order Placed', description: 'Received in kitchen system' },
   { key: 'ACCEPTED', label: 'Confirmed', description: 'Table order acknowledged' },
   { key: 'PREPARING', label: 'Cooking', description: 'Baristas & Chefs crafting order' },
   { key: 'READY_FOR_PICKUP', label: 'Ready to Serve', description: 'Being brought to your table' },
@@ -38,6 +41,8 @@ const TAKEAWAY_STEPS: TrackingStep[] = [
 
 export const OrderTrackingPage: React.FC = () => {
   const { orderId } = useParams<{ orderId: string }>();
+  const [searchParams] = useSearchParams();
+  const tokenParam = searchParams.get('token');
   const navigate = useNavigate();
   const { addItem } = useCart();
   const { showToast } = useToast();
@@ -46,11 +51,12 @@ export const OrderTrackingPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [isReordering, setIsReordering] = useState(false);
+  const [isThermalPrinterOpen, setIsThermalPrinterOpen] = useState(false);
 
   useEffect(() => {
     if (!orderId) return;
 
-    fetchOrderById(orderId).then((res) => {
+    fetchOrderById(orderId, tokenParam).then((res) => {
       setOrder(res);
       setLoading(false);
     });
@@ -59,13 +65,13 @@ export const OrderTrackingPage: React.FC = () => {
 
     // Auto-refresh order status periodically (simulates live realtime updates)
     const interval = setInterval(() => {
-      fetchOrderById(orderId).then((res) => {
+      fetchOrderById(orderId, tokenParam).then((res) => {
         if (res) setOrder(res);
       });
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [orderId]);
+  }, [orderId, tokenParam]);
 
   const handleReorder = async () => {
     if (!order || !order.items) return;
@@ -212,7 +218,7 @@ export const OrderTrackingPage: React.FC = () => {
             </div>
             <p className="text-[11px] text-red-700">
               {order.status === 'REJECTED'
-                ? 'The cafe kitchen is unable to accept this order at this time.'
+                ? 'The kitchen is unable to accept this order at this time.'
                 : 'This order was cancelled.'}
             </p>
           </div>
@@ -288,15 +294,38 @@ export const OrderTrackingPage: React.FC = () => {
             </div>
           </div>
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleReorder}
-            isLoading={isReordering}
-            leftIcon={<RotateCcw className="w-3.5 h-3.5" />}
-          >
-            Reorder
-          </Button>
+          <div className="flex items-center flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsThermalPrinterOpen(true)}
+              leftIcon={<Printer className="w-3.5 h-3.5" />}
+            >
+              View / Print Bill
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+              onClick={() => {
+                const cafePhone = '918045678900';
+                const msg = `Hi HANGOUT, I am inquiring about my Order #${order.order_number} (${order.order_type}). Current status is ${order.order_status}.`;
+                window.open(`https://wa.me/${cafePhone}?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer');
+              }}
+              leftIcon={<MessageCircle className="w-3.5 h-3.5 text-emerald-600" />}
+            >
+              WhatsApp
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleReorder}
+              isLoading={isReordering}
+              leftIcon={<RotateCcw className="w-3.5 h-3.5" />}
+            >
+              Reorder
+            </Button>
+          </div>
         </div>
 
         {/* Ordered Items List */}
@@ -327,6 +356,15 @@ export const OrderTrackingPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Thermal Printer Simulation Modal */}
+      {order && (
+        <ThermalPrinterAnimation
+          order={order}
+          isOpen={isThermalPrinterOpen}
+          onClose={() => setIsThermalPrinterOpen(false)}
+        />
+      )}
     </div>
   );
 };
