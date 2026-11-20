@@ -4,24 +4,30 @@
 -- Description:
 -- 1. Provisions core operational roles ('admin', 'manager', 'cashier', 'waiter', 'kitchen')
 --    and pre-seeds staff profiles with explicit unlinked auth status (auth_user_id = NULL).
--- 2. Provides secure self-binding RPC (bind_staff_auth_user) for genuine Supabase Auth users.
--- 3. Adds `guest_access_token` column to `public.orders` and indexes it so that
---    customer receipts and bills encode the full tracking token into scannable QR codes.
--- 4. Backfills existing orders with cryptographically secure, unpredictable CSPRNG tokens
---    and syncs matching SHA-256 hashes, preserving all existing orders (including ₹250 demo order).
--- 5. Hardens `place_order` RPC with true CSPRNG token generation and dual token storage.
--- 6. Secures `get_admin_orders` RPC:
---    - Strictly requires authenticated Supabase Auth session (auth.uid()).
---    - Strictly verifies active linked staff profile in public.user_profiles.
---    - Drops legacy overloads and REVOKES EXECUTE from anon and PUBLIC.
---    - Completely blocks anonymous users and unauthorized callers.
--- 7. Hardens `get_order_by_access_token` to verify token or hash match before returning order details.
--- 8. Creates `guest_lookup_attempts` table to enforce server-side rate limiting (5 attempts -> 15 min lock).
--- 9. Hardens `lookup_guest_order` RPC:
+-- 2. Creates `staff_invitations` table to enforce administrator-controlled staff provisioning.
+-- 3. Provides `admin_provision_staff` RPC strictly restricted to active confirmed Administrators.
+-- 4. Hardens `bind_staff_auth_user` RPC:
+--    - Requires genuine `auth.uid()`.
+--    - Strictly verifies that `auth.users.email_confirmed_at IS NOT NULL`.
+--    - Enforces account identity immutability: prevents role jumping if email is modified.
+--    - Blocks arbitrary self-registration from claiming pre-seeded profiles without an
+--      authorized administrator invitation and matching provisioning code.
+-- 5. Secures `get_admin_orders` RPC:
+--    - Strictly requires authenticated Supabase Auth session with confirmed email.
+--    - Enforces field-level least-privilege: raw `guest_access_token` and unmasked contact
+--      info are restricted to billing roles ('admin', 'manager', 'cashier');
+--      'kitchen' and 'waiter' receive NULL tokens and masked customer contact info.
+--    - Completely revokes access from anon and PUBLIC.
+-- 6. Adds `guest_access_token` column to `public.orders` and indexes it for scannable bill QR codes.
+-- 7. Backfills existing orders with cryptographically secure CSPRNG tokens and matching hashes.
+-- 8. Hardens `place_order` RPC with true CSPRNG token generation and dual token storage.
+-- 9. Hardens `get_order_by_access_token` to verify token or hash match before returning order details.
+-- 10. Creates `guest_lookup_attempts` table to enforce server-side rate limiting (5 attempts -> 15 min lock).
+-- 11. Hardens `lookup_guest_order` RPC:
 --    - Requires full 10-digit mobile number verification.
 --    - Enforces rate limiting against brute-force harvesting.
 --    - Returns customer order status directly WITHOUT disclosing raw bearer guest_access_tokens.
--- 10. Enforces `SECURITY DEFINER`, fixed `search_path = public, extensions, pg_temp`,
+-- 12. Enforces `SECURITY DEFINER`, fixed `search_path = public, extensions, pg_temp`,
 --     and explicit least-privilege EXECUTE grants.
 -- ============================================================================
 
@@ -57,9 +63,155 @@ SET full_name = EXCLUDED.full_name,
     role_id = EXCLUDED.role_id,
     is_active = EXCLUDED.is_active;
 
--- Secure Staff Self-Binding RPC:
--- Authenticated staff users link their cryptographic auth.uid() to their pre-provisioned profile
-CREATE OR REPLACE FUNCTION public.bind_staff_auth_user()
+-- ============================================================================
+-- 2. SECURE STAFF PROVISIONING & INVITATION ARCHITECTURE
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS public.staff_invitations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email TEXT UNIQUE NOT NULL,
+    role_id TEXT NOT NULL REFERENCES public.roles(id) ON UPDATE CASCADE,
+    full_name TEXT NOT NULL,
+    provisioning_code_hash TEXT NOT NULL,
+    created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    is_claimed BOOLEAN DEFAULT FALSE,
+    claimed_at TIMESTAMPTZ DEFAULT NULL,
+    claimed_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 days'),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_invitations_email
+ON public.staff_invitations (LOWER(email));
+
+REVOKE ALL ON public.staff_invitations FROM PUBLIC, anon, authenticated;
+
+-- Seed bootstrap invitation record for initial administrative setup
+-- Requires confirmed email matching admin@hangout.in and presenting the bootstrap provisioning key
+INSERT INTO public.staff_invitations (
+    email, role_id, full_name, provisioning_code_hash, expires_at
+) VALUES (
+    'admin@hangout.in',
+    'admin',
+    'Administrator',
+    encode(sha256('HANGOUT-ADMIN-BOOTSTRAP-2026'::bytea), 'hex'),
+    NOW() + INTERVAL '365 days'
+)
+ON CONFLICT (email) DO UPDATE
+SET provisioning_code_hash = EXCLUDED.provisioning_code_hash,
+    expires_at = EXCLUDED.expires_at,
+    is_claimed = FALSE;
+
+-- Administrative Provisioning RPC: Strictly restricted to active confirmed Administrators
+CREATE OR REPLACE FUNCTION public.admin_provision_staff(
+    p_email TEXT,
+    p_full_name TEXT,
+    p_role_id TEXT,
+    p_provisioning_code TEXT DEFAULT NULL,
+    p_target_auth_user_id UUID DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, pg_temp
+AS $$
+DECLARE
+    v_admin_uid UUID := auth.uid();
+    v_is_admin BOOLEAN := FALSE;
+    v_code TEXT := p_provisioning_code;
+    v_code_hash TEXT := NULL;
+    v_profile_id UUID;
+BEGIN
+    -- 1. Strictly verify caller is an active, confirmed Admin
+    IF v_admin_uid IS NULL THEN
+        RAISE EXCEPTION 'Access denied: Authentication required.';
+    END IF;
+
+    SELECT EXISTS (
+        SELECT 1 FROM public.user_profiles up
+        JOIN auth.users au ON au.id = up.auth_user_id
+        WHERE up.auth_user_id = v_admin_uid
+          AND up.is_active = TRUE
+          AND up.role_id = 'admin'
+          AND au.email_confirmed_at IS NOT NULL
+    ) INTO v_is_admin;
+
+    IF NOT v_is_admin THEN
+        RAISE EXCEPTION 'Access denied: Only an active Administrator with confirmed email can provision staff accounts.';
+    END IF;
+
+    -- 2. Validate role
+    IF LOWER(TRIM(p_role_id)) NOT IN ('admin', 'manager', 'cashier', 'waiter', 'kitchen') THEN
+        RAISE EXCEPTION 'Invalid role: "%". Allowed roles are admin, manager, cashier, waiter, kitchen.', p_role_id;
+    END IF;
+
+    -- 3. If target auth_user_id is provided directly by admin, bind immediately
+    IF p_target_auth_user_id IS NOT NULL THEN
+        IF EXISTS (
+            SELECT 1 FROM public.user_profiles
+            WHERE auth_user_id = p_target_auth_user_id
+              AND LOWER(email) <> LOWER(TRIM(p_email))
+        ) THEN
+            RAISE EXCEPTION 'The target Supabase Auth user is already bound to another staff profile.';
+        END IF;
+
+        INSERT INTO public.user_profiles (email, full_name, role_id, is_active, auth_user_id, updated_at)
+        VALUES (LOWER(TRIM(p_email)), TRIM(p_full_name), LOWER(TRIM(p_role_id)), TRUE, p_target_auth_user_id, NOW())
+        ON CONFLICT (email) DO UPDATE
+        SET full_name = EXCLUDED.full_name,
+            role_id = EXCLUDED.role_id,
+            is_active = TRUE,
+            auth_user_id = p_target_auth_user_id,
+            updated_at = NOW()
+        RETURNING id INTO v_profile_id;
+
+        RETURN jsonb_build_object(
+            'success', true,
+            'message', 'Staff account bound directly to target auth user.',
+            'profile_id', v_profile_id,
+            'email', LOWER(TRIM(p_email)),
+            'role_id', LOWER(TRIM(p_role_id))
+        );
+    END IF;
+
+    -- 4. Otherwise, generate or record an invitation code
+    IF v_code IS NULL OR TRIM(v_code) = '' THEN
+        v_code := encode(sha256((gen_random_uuid()::text || clock_timestamp()::text || random()::text)::bytea), 'hex');
+    END IF;
+    v_code_hash := encode(sha256(TRIM(v_code)::bytea), 'hex');
+
+    INSERT INTO public.staff_invitations (email, role_id, full_name, provisioning_code_hash, created_by, expires_at)
+    VALUES (LOWER(TRIM(p_email)), LOWER(TRIM(p_role_id)), TRIM(p_full_name), v_code_hash, v_admin_uid, NOW() + INTERVAL '14 days')
+    ON CONFLICT (email) DO UPDATE
+    SET role_id = EXCLUDED.role_id,
+        full_name = EXCLUDED.full_name,
+        provisioning_code_hash = EXCLUDED.provisioning_code_hash,
+        created_by = v_admin_uid,
+        is_claimed = FALSE,
+        claimed_at = NULL,
+        claimed_by = NULL,
+        expires_at = NOW() + INTERVAL '14 days';
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'email', LOWER(TRIM(p_email)),
+        'role_id', LOWER(TRIM(p_role_id)),
+        'provisioning_code', v_code,
+        'expires_at', (NOW() + INTERVAL '14 days')
+    );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.admin_provision_staff(TEXT, TEXT, TEXT, TEXT, UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.admin_provision_staff(TEXT, TEXT, TEXT, TEXT, UUID) TO authenticated;
+
+-- Secure Staff Self-Binding RPC with Email Confirmation & Immutability Enforcement
+-- Drop legacy 0-parameter overload
+DROP FUNCTION IF EXISTS public.bind_staff_auth_user();
+
+CREATE OR REPLACE FUNCTION public.bind_staff_auth_user(
+    p_provisioning_code TEXT DEFAULT NULL
+)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -68,50 +220,123 @@ AS $$
 DECLARE
     v_uid UUID := auth.uid();
     v_email TEXT;
-    v_profile public.user_profiles%ROWTYPE;
+    v_email_confirmed_at TIMESTAMPTZ;
+    v_existing_profile_for_uid public.user_profiles%ROWTYPE;
+    v_invite public.staff_invitations%ROWTYPE;
+    v_code_hash TEXT;
+    v_bound_profile public.user_profiles%ROWTYPE;
 BEGIN
+    -- 1. Strictly require an authenticated Supabase Auth user
     IF v_uid IS NULL THEN
         RAISE EXCEPTION 'Access denied: Valid Supabase Auth session required.';
     END IF;
 
-    SELECT email INTO v_email FROM auth.users WHERE id = v_uid;
+    -- 2. Explicitly verify that the user email is confirmed in auth.users
+    SELECT email, email_confirmed_at
+    INTO v_email, v_email_confirmed_at
+    FROM auth.users
+    WHERE id = v_uid;
+
     IF v_email IS NULL THEN
-        RAISE EXCEPTION 'Authenticated user has no verified email address.';
+        RAISE EXCEPTION 'Access denied: Authenticated user has no registered email address.';
     END IF;
 
-    UPDATE public.user_profiles
-    SET auth_user_id = v_uid,
-        updated_at = NOW()
-    WHERE email = LOWER(v_email)
-      AND is_active = TRUE
-    RETURNING * INTO v_profile;
+    IF v_email_confirmed_at IS NULL THEN
+        RAISE EXCEPTION 'Access denied: Email address "%" must be confirmed before claiming staff access.', v_email;
+    END IF;
 
-    IF v_profile.id IS NULL THEN
-        SELECT * INTO v_profile FROM public.user_profiles WHERE auth_user_id = v_uid;
-        IF v_profile.id IS NULL THEN
-            RETURN jsonb_build_object(
-                'success', false,
-                'message', 'No active staff role profile exists for email: ' || v_email
-            );
+    -- 3. Enforce Account Identity Immutability:
+    -- Check if this auth.uid is ALREADY bound to a staff profile
+    SELECT * INTO v_existing_profile_for_uid
+    FROM public.user_profiles
+    WHERE auth_user_id = v_uid;
+
+    IF v_existing_profile_for_uid.id IS NOT NULL THEN
+        -- Prevent role jumping: if auth.users email was changed, do not allow re-binding to a different profile
+        IF LOWER(v_existing_profile_for_uid.email) <> LOWER(v_email) THEN
+            RAISE EXCEPTION 'Security violation: Account identity was modified. Staff role cannot be transferred across email addresses.';
         END IF;
+
+        -- Return legitimate existing profile idempotently
+        RETURN jsonb_build_object(
+            'success', true,
+            'profile_id', v_existing_profile_for_uid.id,
+            'role_id', v_existing_profile_for_uid.role_id,
+            'full_name', v_existing_profile_for_uid.full_name,
+            'email', v_existing_profile_for_uid.email,
+            'is_active', v_existing_profile_for_uid.is_active
+        );
     END IF;
+
+    -- 4. Check whether an administrator has directly bound this user
+    SELECT * INTO v_bound_profile
+    FROM public.user_profiles
+    WHERE LOWER(email) = LOWER(v_email)
+      AND auth_user_id = v_uid
+      AND is_active = TRUE;
+
+    IF v_bound_profile.id IS NOT NULL THEN
+        RETURN jsonb_build_object(
+            'success', true,
+            'profile_id', v_bound_profile.id,
+            'role_id', v_bound_profile.role_id,
+            'full_name', v_bound_profile.full_name,
+            'email', v_bound_profile.email,
+            'is_active', v_bound_profile.is_active
+        );
+    END IF;
+
+    -- 5. Prevent arbitrary self-registration: Require authorized invitation & valid provisioning code
+    v_code_hash := encode(sha256(TRIM(COALESCE(p_provisioning_code, ''))::bytea), 'hex');
+
+    SELECT * INTO v_invite
+    FROM public.staff_invitations
+    WHERE LOWER(email) = LOWER(v_email)
+      AND is_claimed = FALSE
+      AND expires_at > NOW();
+
+    IF v_invite.id IS NULL THEN
+        RAISE EXCEPTION 'Access denied: No authorized staff invitation exists for "%". Privileged accounts must be explicitly provisioned by an administrator.', v_email;
+    END IF;
+
+    IF p_provisioning_code IS NULL OR TRIM(p_provisioning_code) = '' OR v_invite.provisioning_code_hash <> v_code_hash THEN
+        RAISE EXCEPTION 'Access denied: A valid staff provisioning code is required to claim this profile.';
+    END IF;
+
+    -- Mark invitation as claimed
+    UPDATE public.staff_invitations
+    SET is_claimed = TRUE,
+        claimed_at = NOW(),
+        claimed_by = v_uid
+    WHERE id = v_invite.id;
+
+    -- Claim and bind staff profile
+    INSERT INTO public.user_profiles (email, full_name, role_id, is_active, auth_user_id, updated_at)
+    VALUES (LOWER(v_email), v_invite.full_name, v_invite.role_id, TRUE, v_uid, NOW())
+    ON CONFLICT (email) DO UPDATE
+    SET auth_user_id = v_uid,
+        full_name = EXCLUDED.full_name,
+        role_id = EXCLUDED.role_id,
+        is_active = TRUE,
+        updated_at = NOW()
+    RETURNING * INTO v_bound_profile;
 
     RETURN jsonb_build_object(
         'success', true,
-        'profile_id', v_profile.id,
-        'role_id', v_profile.role_id,
-        'full_name', v_profile.full_name,
-        'email', v_profile.email,
-        'is_active', v_profile.is_active
+        'profile_id', v_bound_profile.id,
+        'role_id', v_bound_profile.role_id,
+        'full_name', v_bound_profile.full_name,
+        'email', v_bound_profile.email,
+        'is_active', v_bound_profile.is_active
     );
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.bind_staff_auth_user() FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.bind_staff_auth_user() TO authenticated;
+REVOKE ALL ON FUNCTION public.bind_staff_auth_user(TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.bind_staff_auth_user(TEXT) TO authenticated;
 
 -- ============================================================================
--- 2. ORDERS TABLE SCHEMA ENHANCEMENT & CSPRNG BACKFILL
+-- 3. ORDERS TABLE SCHEMA ENHANCEMENT & CSPRNG BACKFILL
 -- ============================================================================
 
 ALTER TABLE public.orders
@@ -132,7 +357,7 @@ WHERE guest_access_token IS NOT NULL
   AND (guest_access_token_hash IS NULL OR guest_access_token_hash != encode(sha256(guest_access_token::bytea), 'hex'));
 
 -- ============================================================================
--- 3. RATE-LIMITING TABLE FOR GUEST ORDER LOOKUPS
+-- 4. RATE-LIMITING TABLE FOR GUEST ORDER LOOKUPS
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS public.guest_lookup_attempts (
@@ -150,7 +375,7 @@ ON public.guest_lookup_attempts (order_number);
 REVOKE ALL ON public.guest_lookup_attempts FROM PUBLIC, anon, authenticated;
 
 -- ============================================================================
--- 4. PLACE ORDER RPC (DUAL TOKEN PERSISTENCE + CSPRNG GENERATION)
+-- 5. PLACE ORDER RPC (DUAL TOKEN PERSISTENCE + CSPRNG GENERATION)
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.place_order(
@@ -599,7 +824,7 @@ REVOKE ALL ON FUNCTION public.place_order(JSONB, JSONB) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.place_order(JSONB, JSONB) TO anon, authenticated;
 
 -- ============================================================================
--- 5. GET ADMIN ORDERS RPC (STRICT SUPABASE AUTH STAFF ACCESS ONLY)
+-- 6. GET ADMIN ORDERS RPC (LEAST-PRIVILEGE FIELD MASKING PER ROLE)
 -- ============================================================================
 
 -- Drop all legacy overloads
@@ -617,35 +842,40 @@ SET search_path = public, extensions, pg_temp
 AS $$
 DECLARE
     v_uid UUID := auth.uid();
-    v_is_staff BOOLEAN := FALSE;
+    v_caller_role TEXT;
     v_result JSONB;
 BEGIN
-    -- 1. Strictly require an authenticated Supabase Auth session
+    -- 1. Strictly require an authenticated Supabase Auth session with confirmed email
     IF v_uid IS NULL THEN
         RAISE EXCEPTION 'Access denied: Valid Supabase Auth credentials required.';
     END IF;
 
-    -- 2. Verify active staff role in user_profiles linked to the verified auth.uid()
-    SELECT EXISTS (
-        SELECT 1
-        FROM public.user_profiles up
-        WHERE up.auth_user_id = v_uid
-          AND up.is_active = TRUE
-          AND up.role_id IN ('admin', 'manager', 'cashier', 'waiter', 'kitchen')
-    ) INTO v_is_staff;
+    -- 2. Verify active staff role linked to auth.uid with confirmed email
+    SELECT up.role_id INTO v_caller_role
+    FROM public.user_profiles up
+    JOIN auth.users au ON au.id = up.auth_user_id
+    WHERE up.auth_user_id = v_uid
+      AND up.is_active = TRUE
+      AND au.email_confirmed_at IS NOT NULL;
 
-    IF NOT v_is_staff THEN
+    IF v_caller_role IS NULL OR v_caller_role NOT IN ('admin', 'manager', 'cashier', 'waiter', 'kitchen') THEN
         RAISE EXCEPTION 'Access denied: Account does not have an active internal staff role.';
     END IF;
 
-    -- 3. Return internal order records for verified staff
+    -- 3. Return internal order records for verified staff with least-privilege field masking:
+    -- 'admin', 'manager', 'cashier' have billing authority and need guest_access_token for receipt QR generation.
+    -- 'waiter' and 'kitchen' have zero billing need for bearer tracking tokens and sensitive customer contact info.
     SELECT COALESCE(jsonb_agg(order_row ORDER BY (order_row->>'created_at') DESC), '[]'::jsonb)
     INTO v_result
     FROM (
         SELECT jsonb_build_object(
             'id', o.id,
             'order_number', o.order_number,
-            'guest_access_token', o.guest_access_token,
+            -- Least Privilege: Only billing roles (admin, manager, cashier) receive raw bearer token
+            'guest_access_token', CASE
+                WHEN v_caller_role IN ('admin', 'manager', 'cashier') THEN o.guest_access_token
+                ELSE NULL
+            END,
             'order_type', o.order_type,
             'table_id', o.table_id,
             'table_number_snapshot', o.table_number_snapshot,
@@ -654,11 +884,22 @@ BEGIN
             'pickup_notes', o.pickup_notes,
             'customer_id', o.customer_id,
             'customer_name_snapshot', o.customer_name_snapshot,
-            'customer_mobile_snapshot', o.customer_mobile_snapshot,
-            'customer_email_snapshot', o.customer_email_snapshot,
+            -- Mask customer mobile for kitchen and waiter
+            'customer_mobile_snapshot', CASE
+                WHEN v_caller_role IN ('admin', 'manager', 'cashier') THEN o.customer_mobile_snapshot
+                ELSE 'XXXXXX' || RIGHT(regexp_replace(COALESCE(o.customer_mobile_snapshot, ''), '\D', '', 'g'), 4)
+            END,
+            -- Mask customer email for kitchen and waiter
+            'customer_email_snapshot', CASE
+                WHEN v_caller_role IN ('admin', 'manager', 'cashier') THEN o.customer_email_snapshot
+                ELSE NULL
+            END,
             'subtotal', o.subtotal,
             'discount_amount', o.discount_amount,
-            'discount_code', o.discount_code,
+            'discount_code', CASE
+                WHEN v_caller_role IN ('admin', 'manager', 'cashier') THEN o.discount_code
+                ELSE NULL
+            END,
             'tax_amount', o.tax_amount,
             'tax_breakdown', o.tax_breakdown,
             'total_amount', o.total_amount,
@@ -711,7 +952,7 @@ REVOKE ALL ON FUNCTION public.get_admin_orders(TEXT, INT) FROM anon;
 GRANT EXECUTE ON FUNCTION public.get_admin_orders(TEXT, INT) TO authenticated;
 
 -- ============================================================================
--- 6. GET ORDER BY ACCESS TOKEN RPC (CUSTOMER ORDER TRACKING VIA QR BEARER TOKEN)
+-- 7. GET ORDER BY ACCESS TOKEN RPC (CUSTOMER ORDER TRACKING VIA QR BEARER TOKEN)
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.get_order_by_access_token(
@@ -796,7 +1037,7 @@ REVOKE ALL ON FUNCTION public.get_order_by_access_token(TEXT, TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.get_order_by_access_token(TEXT, TEXT) TO anon, authenticated;
 
 -- ============================================================================
--- 7. LOOKUP GUEST ORDER RPC (RATE-LIMITED, DOES NOT DISCLOSE BEARER TOKENS)
+-- 8. LOOKUP GUEST ORDER RPC (RATE-LIMITED, DOES NOT DISCLOSE BEARER TOKENS)
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.lookup_guest_order(
@@ -914,14 +1155,14 @@ BEGIN
                 'customer_name_snapshot', v_order.customer_name_snapshot,
                 'customer_mobile_snapshot', 'XXXXXX' || RIGHT(v_clean_mobile, 4),
                 'subtotal', v_order.subtotal,
-                'discount_amount', v_order.discount_amount,
-                'tax_amount', v_order.tax_amount,
-                'tax_breakdown', v_order.tax_breakdown,
-                'total_amount', v_order.total_amount,
-                'payment_method', v_order.payment_method,
-                'payment_status', v_order.payment_status,
-                'order_status', v_order.order_status,
-                'status', v_order.order_status,
+                'discount_amount', v_discount_amount,
+                'tax_amount', v_tax_amount,
+                'tax_breakdown', v_tax_breakdown,
+                'total_amount', v_total_amount,
+                'payment_method', v_payment_method,
+                'payment_status', v_payment_status,
+                'order_status', v_order_status,
+                'status', v_order_status,
                 'created_at', v_order.created_at,
                 'updated_at', v_order.updated_at,
                 'items', v_items

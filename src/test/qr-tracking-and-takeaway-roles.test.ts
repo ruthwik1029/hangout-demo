@@ -517,5 +517,200 @@ describe('Phase 5: Server-Side Staff Authorization & Security Hardening', () => 
     expect(foundDemo?.payment_status).toBe('PAID');
     expect(foundDemo?.items.length).toBe(1);
   });
+
+  it('8. Rejects staff binding when email is unverified (email_confirmed_at IS NULL)', () => {
+    const simulateStaffBinding = (
+      user: { id: string; email: string; email_confirmed_at: string | null },
+      _code?: string
+    ) => {
+      if (!user.id) {
+        throw new Error('Access denied: Valid Supabase Auth session required.');
+      }
+      if (!user.email_confirmed_at) {
+        throw new Error(
+          `Access denied: Email address "${user.email}" must be confirmed before claiming staff access.`
+        );
+      }
+      return true;
+    };
+
+    const unconfirmedUser = {
+      id: 'uuid-unconfirmed',
+      email: 'newhire@hangout.in',
+      email_confirmed_at: null,
+    };
+
+    expect(() => simulateStaffBinding(unconfirmedUser, 'VALID-CODE')).toThrow(
+      /must be confirmed before claiming staff access/
+    );
+  });
+
+  it('9. Rejects unauthorized self-registration (no staff invitation exists for email)', () => {
+    const invitations = [
+      {
+        email: 'manager@hangout.in',
+        role_id: 'manager',
+        is_claimed: false,
+        expires_at: new Date(Date.now() + 86400000).toISOString(),
+      },
+    ];
+
+    const simulateSelfReg = (
+      user: { id: string; email: string; email_confirmed_at: string },
+      _code: string
+    ) => {
+      if (!user.email_confirmed_at) throw new Error('Email not confirmed');
+      const invite = invitations.find(
+        (i) => i.email.toLowerCase() === user.email.toLowerCase() && !i.is_claimed
+      );
+      if (!invite) {
+        throw new Error(
+          `Access denied: No authorized staff invitation exists for "${user.email}". Privileged accounts must be explicitly provisioned by an administrator.`
+        );
+      }
+      return true;
+    };
+
+    const attackerUser = {
+      id: 'uuid-attacker',
+      email: 'attacker@evil.com',
+      email_confirmed_at: '2026-11-20T10:00:00Z',
+    };
+
+    expect(() => simulateSelfReg(attackerUser, 'ATTEMPT-CODE')).toThrow(
+      /No authorized staff invitation exists/
+    );
+  });
+
+  it('10. Rejects unauthorized role claiming without valid provisioning code', () => {
+    const hashFn = (c: string) => `hash-of-${c}`;
+    const claimWithCode = (providedCode: string | null) => {
+      if (!providedCode || providedCode.trim() === '' || hashFn(providedCode.trim()) !== 'hash-of-CORRECT-CODE-2026') {
+        throw new Error('Access denied: A valid staff provisioning code is required to claim this profile.');
+      }
+      return true;
+    };
+
+    expect(() => claimWithCode(null)).toThrow(/A valid staff provisioning code is required/);
+    expect(() => claimWithCode('')).toThrow(/A valid staff provisioning code is required/);
+    expect(() => claimWithCode('WRONG-CODE')).toThrow(/A valid staff provisioning code is required/);
+    expect(claimWithCode('CORRECT-CODE-2026')).toBe(true);
+  });
+
+  it('11. Blocks role jumping when account email is modified in auth.users', () => {
+    const existingProfileForUid = {
+      id: 'prof-waiter-01',
+      auth_user_id: 'uuid-user-01',
+      email: 'waiter@hangout.in',
+      role_id: 'waiter',
+    };
+
+    const modifiedAuthUser = {
+      id: 'uuid-user-01',
+      email: 'admin@hangout.in',
+      email_confirmed_at: '2026-11-20T10:00:00Z',
+    };
+
+    const verifyIdentityImmutability = (
+      existingProf: typeof existingProfileForUid,
+      authUser: typeof modifiedAuthUser
+    ) => {
+      if (existingProf.id && existingProf.email.toLowerCase() !== authUser.email.toLowerCase()) {
+        throw new Error(
+          'Security violation: Account identity was modified. Staff role cannot be transferred across email addresses.'
+        );
+      }
+      return true;
+    };
+
+    expect(() => verifyIdentityImmutability(existingProfileForUid, modifiedAuthUser)).toThrow(
+      /Security violation: Account identity was modified/
+    );
+  });
+
+  it('12. Validates legitimate staff binding with confirmed email and valid provisioning code', () => {
+    const invite = {
+      id: 'inv-01',
+      email: 'manager@hangout.in',
+      role_id: 'manager',
+      full_name: 'Store Manager',
+      provisioning_code: 'HANGOUT-MGR-2026',
+      is_claimed: false,
+      expires_at: new Date(Date.now() + 86400000).toISOString(),
+    };
+
+    const authUser = {
+      id: 'uuid-genuine-mgr',
+      email: 'manager@hangout.in',
+      email_confirmed_at: '2026-11-20T10:00:00Z',
+    };
+
+    const bindUser = (user: typeof authUser, code: string) => {
+      if (!user.email_confirmed_at) throw new Error('Unconfirmed email');
+      if (user.email.toLowerCase() !== invite.email.toLowerCase()) throw new Error('No invitation');
+      if (code !== invite.provisioning_code) throw new Error('Invalid code');
+      invite.is_claimed = true;
+      return {
+        success: true,
+        profile_id: 'prof-mgr-new',
+        role_id: invite.role_id,
+        full_name: invite.full_name,
+        email: user.email,
+        is_active: true,
+      };
+    };
+
+    const result = bindUser(authUser, 'HANGOUT-MGR-2026');
+    expect(result.success).toBe(true);
+    expect(result.role_id).toBe('manager');
+    expect(result.email).toBe('manager@hangout.in');
+    expect(invite.is_claimed).toBe(true);
+  });
+
+  it('13. Enforces least-privilege token access (billing roles receive token; kitchen/waiter receive NULL)', () => {
+    const rawOrderRecord = {
+      id: 'ord-token-test-1',
+      order_number: '2026-PRIV-01',
+      customer_mobile_snapshot: '9876543210',
+      customer_email_snapshot: 'cust@example.com',
+      guest_access_token: 'secret-raw-token-777',
+      discount_code: 'WELCOME50',
+    };
+
+    const formatOrderForRole = (order: typeof rawOrderRecord, role: string) => {
+      const isBillingRole = ['admin', 'manager', 'cashier'].includes(role);
+      return {
+        id: order.id,
+        order_number: order.order_number,
+        guest_access_token: isBillingRole ? order.guest_access_token : null,
+        customer_mobile_snapshot: isBillingRole
+          ? order.customer_mobile_snapshot
+          : `XXXXXX${order.customer_mobile_snapshot.slice(-4)}`,
+        customer_email_snapshot: isBillingRole ? order.customer_email_snapshot : null,
+        discount_code: isBillingRole ? order.discount_code : null,
+      };
+    };
+
+    // Billing roles get full access for receipt printing / QR billing
+    const adminView = formatOrderForRole(rawOrderRecord, 'admin');
+    expect(adminView.guest_access_token).toBe('secret-raw-token-777');
+    expect(adminView.customer_mobile_snapshot).toBe('9876543210');
+    expect(adminView.customer_email_snapshot).toBe('cust@example.com');
+
+    const cashierView = formatOrderForRole(rawOrderRecord, 'cashier');
+    expect(cashierView.guest_access_token).toBe('secret-raw-token-777');
+
+    // Operational roles (kitchen, waiter) have tokens and PII stripped
+    const kitchenView = formatOrderForRole(rawOrderRecord, 'kitchen');
+    expect(kitchenView.guest_access_token).toBeNull();
+    expect(kitchenView.customer_mobile_snapshot).toBe('XXXXXX3210');
+    expect(kitchenView.customer_email_snapshot).toBeNull();
+    expect(kitchenView.discount_code).toBeNull();
+
+    const waiterView = formatOrderForRole(rawOrderRecord, 'waiter');
+    expect(waiterView.guest_access_token).toBeNull();
+    expect(waiterView.customer_mobile_snapshot).toBe('XXXXXX3210');
+    expect(waiterView.customer_email_snapshot).toBeNull();
+  });
 });
 

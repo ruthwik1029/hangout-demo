@@ -12,6 +12,7 @@ export const PortalLogin: React.FC = () => {
 
   const [authEmail, setAuthEmail] = React.useState('');
   const [authPassword, setAuthPassword] = React.useState('');
+  const [provisioningCode, setProvisioningCode] = React.useState('');
   const [authLoading, setAuthLoading] = React.useState(false);
   const [authError, setAuthError] = React.useState('');
   const [showRealLogin, setShowRealLogin] = React.useState(false);
@@ -22,7 +23,7 @@ export const PortalLogin: React.FC = () => {
     setAuthLoading(true);
     setAuthError('');
 
-    const res = await signInWithSupabaseAuth(authEmail.trim(), authPassword);
+    const res = await signInWithSupabaseAuth(authEmail.trim(), authPassword, provisioningCode.trim());
     setAuthLoading(false);
     if (!res.success) {
       setAuthError(res.error || 'Login failed. Please check your credentials.');
@@ -156,6 +157,18 @@ export const PortalLogin: React.FC = () => {
                   required
                 />
               </div>
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-brand-muted mb-1 uppercase">
+                Staff Provisioning Code <span className="text-[10px] text-brand-charcoal/50 font-normal lowercase">(required only for initial account binding)</span>
+              </label>
+              <input
+                type="text"
+                value={provisioningCode}
+                onChange={(e) => setProvisioningCode(e.target.value)}
+                placeholder="e.g. HANGOUT-ADMIN-BOOTSTRAP-2026"
+                className="w-full px-3 py-2 text-xs rounded-xl border border-brand-border focus:border-brand-black focus:outline-none"
+              />
             </div>
             <div className="flex justify-end">
               <Button type="submit" variant="primary" size="sm" disabled={authLoading}>

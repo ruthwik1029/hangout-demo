@@ -10,7 +10,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isDemoSession: boolean;
   loginAsRole: (role: UserRole) => void;
-  signInWithSupabaseAuth: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  signInWithSupabaseAuth: (email: string, password: string, provisioningCode?: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   hasRole: (allowedRoles: UserRole[]) => boolean;
   availableDemoUsers: UserProfile[];
@@ -97,7 +97,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 
   const signInWithSupabaseAuth = useCallback(
-    async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+    async (email: string, password: string, provisioningCode?: string): Promise<{ success: boolean; error?: string }> => {
       if (!isSupabaseConfigured()) {
         return {
           success: false,
@@ -111,12 +111,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return { success: false, error: error?.message || 'Authentication failed' };
         }
 
-        const { data: profileRes, error: profileErr } = await supabase.rpc('bind_staff_auth_user');
+        const { data: profileRes, error: profileErr } = await supabase.rpc('bind_staff_auth_user', {
+          p_provisioning_code: provisioningCode?.trim() || null,
+        });
         if (profileErr || !profileRes || !profileRes.success) {
           await supabase.auth.signOut();
           return {
             success: false,
-            error: profileRes?.message || 'Authenticated user does not have an active internal staff role assignment.',
+            error: profileRes?.message || profileErr?.message || 'Authenticated user does not have an active internal staff role assignment.',
           };
         }
 
