@@ -734,7 +734,7 @@ describe('Phase 5: Server-Side Staff Authorization & Security Hardening', () => 
     expect(portalLoginContent).not.toContain('BOOTSTRAP');
   });
 
-  it('15. Ordinary authenticated or anonymous users cannot execute manual_provision_admin', () => {
+  it('15. Strictly restricts manual_provision_admin to postgres superuser (revoking from PUBLIC, anon, authenticated, and service_role)', () => {
     const fs = require('fs');
     const path = require('path');
     const migrationPath = path.resolve(
@@ -744,40 +744,48 @@ describe('Phase 5: Server-Side Staff Authorization & Security Hardening', () => 
     const migrationContent = fs.readFileSync(migrationPath, 'utf-8');
 
     // SQL permission verification:
-    // REVOKE ALL ON FUNCTION public.manual_provision_admin(TEXT, UUID) FROM PUBLIC, anon, authenticated;
-    // GRANT EXECUTE ON FUNCTION public.manual_provision_admin(TEXT, UUID) TO postgres, service_role;
     expect(migrationContent).toContain(
-      'REVOKE ALL ON FUNCTION public.manual_provision_admin(TEXT, UUID) FROM PUBLIC, anon, authenticated;'
+      'REVOKE ALL ON FUNCTION public.manual_provision_admin(TEXT, UUID) FROM PUBLIC, anon, authenticated, service_role;'
     );
     expect(migrationContent).toContain(
+      'REVOKE EXECUTE ON FUNCTION public.manual_provision_admin(TEXT, UUID) FROM PUBLIC, anon, authenticated, service_role;'
+    );
+    expect(migrationContent).toContain(
+      'GRANT EXECUTE ON FUNCTION public.manual_provision_admin(TEXT, UUID) TO postgres;'
+    );
+    expect(migrationContent).not.toContain(
       'GRANT EXECUTE ON FUNCTION public.manual_provision_admin(TEXT, UUID) TO postgres, service_role;'
     );
 
     // Runtime permission simulation:
-    const simulateInvokeManualProvision = (role: 'anon' | 'authenticated' | 'postgres' | 'service_role') => {
-      if (role === 'anon' || role === 'authenticated') {
-        throw new Error('permission denied for function manual_provision_admin');
+    const simulateInvokeManualProvision = (role: 'anon' | 'authenticated' | 'service_role' | 'postgres') => {
+      if (role === 'anon' || role === 'authenticated' || role === 'service_role') {
+        throw new Error(`permission denied for function manual_provision_admin by role "${role}"`);
       }
       return { success: true };
     };
 
     expect(() => simulateInvokeManualProvision('anon')).toThrow(/permission denied/);
     expect(() => simulateInvokeManualProvision('authenticated')).toThrow(/permission denied/);
+    expect(() => simulateInvokeManualProvision('service_role')).toThrow(/permission denied/);
     expect(simulateInvokeManualProvision('postgres').success).toBe(true);
-    expect(simulateInvokeManualProvision('service_role').success).toBe(true);
   });
 
-  it('16. manual_provision_admin strictly rejects non-existent users, unconfirmed emails, mismatched emails, or cross-profile reassignment', () => {
+  it('16. manual_provision_admin strictly prevents role escalation, rejects arbitrary profile creation, and requires pre-seeded admin profile', () => {
     const authUsers = [
       { id: 'uuid-admin-user', email: 'admin@hangout.in', email_confirmed_at: '2026-11-20T10:00:00Z' },
       { id: 'uuid-unconfirmed', email: 'unconfirmed@hangout.in', email_confirmed_at: null },
       { id: 'uuid-mismatch', email: 'actual@hangout.in', email_confirmed_at: '2026-11-20T10:00:00Z' },
       { id: 'uuid-already-staff', email: 'waiter@hangout.in', email_confirmed_at: '2026-11-20T10:00:00Z' },
+      { id: 'uuid-manager-user', email: 'manager@hangout.in', email_confirmed_at: '2026-11-20T10:00:00Z' },
+      { id: 'uuid-arbitrary-user', email: 'newbie@hangout.in', email_confirmed_at: '2026-11-20T10:00:00Z' },
     ];
 
+    // Pre-seeded profiles in database
     const userProfiles = [
-      { id: 'prof-1', auth_user_id: 'uuid-already-staff', email: 'waiter@hangout.in', role_id: 'waiter' },
-      { id: 'prof-2', auth_user_id: 'uuid-other', email: 'admin@hangout.in', role_id: 'admin' },
+      { id: 'prof-admin', auth_user_id: null as string | null, email: 'admin@hangout.in', role_id: 'admin' },
+      { id: 'prof-mgr', auth_user_id: null as string | null, email: 'manager@hangout.in', role_id: 'manager' },
+      { id: 'prof-waiter', auth_user_id: 'uuid-already-staff', email: 'waiter@hangout.in', role_id: 'waiter' },
     ];
 
     const simulateManualProvision = (pEmail: string, pAuthUserId: string) => {
@@ -801,7 +809,22 @@ describe('Phase 5: Server-Side Staff Authorization & Security Hardening', () => 
         );
       }
 
-      // 4. Target auth_user_id already bound to another profile email
+      // 4. Must exist as pre-seeded profile; no upsert or arbitrary profile creation
+      const existingProfile = userProfiles.find((p) => p.email.toLowerCase() === pEmail.toLowerCase().trim());
+      if (!existingProfile) {
+        throw new Error(
+          `Access denied: No pre-seeded profile found for email "${pEmail}". Manual provisioning cannot create arbitrary profiles.`
+        );
+      }
+
+      // 5. Role escalation check: Reject any profile whose role is not 'admin'
+      if (existingProfile.role_id !== 'admin') {
+        throw new Error(
+          `Role escalation rejected: Profile for "${pEmail}" has role "${existingProfile.role_id}", not "admin". Manual provisioning only binds pre-seeded admin profiles.`
+        );
+      }
+
+      // 6. Target auth_user_id already bound to another profile email
       if (
         userProfiles.some(
           (p) =>
@@ -814,21 +837,19 @@ describe('Phase 5: Server-Side Staff Authorization & Security Hardening', () => 
         );
       }
 
-      // 5. Staff profile email already bound to another auth_user_id
+      // 7. Staff profile email already bound to another auth_user_id
       if (
-        userProfiles.some(
-          (p) =>
-            p.email.toLowerCase() === pEmail.toLowerCase() &&
-            p.auth_user_id &&
-            p.auth_user_id !== pAuthUserId
-        )
+        existingProfile.auth_user_id !== null &&
+        existingProfile.auth_user_id !== pAuthUserId
       ) {
         throw new Error(
           `Security violation: The staff profile "${pEmail}" is already bound to a different Supabase Auth user.`
         );
       }
 
-      return { success: true, email: pEmail, role_id: 'admin' };
+      // 8. Bind existing pre-seeded admin profile
+      existingProfile.auth_user_id = pAuthUserId;
+      return { success: true, email: pEmail, role_id: existingProfile.role_id };
     };
 
     // User not found
@@ -846,28 +867,88 @@ describe('Phase 5: Server-Side Staff Authorization & Security Hardening', () => 
       simulateManualProvision('unconfirmed@hangout.in', 'uuid-unconfirmed')
     ).toThrow(/must be confirmed in Supabase Auth/);
 
+    // Arbitrary profile creation rejected (no pre-seeded profile exists)
+    expect(() => simulateManualProvision('newbie@hangout.in', 'uuid-arbitrary-user')).toThrow(
+      /No pre-seeded profile found for email "newbie@hangout.in". Manual provisioning cannot create arbitrary profiles/
+    );
+
+    // Role escalation rejected: Attempting to provision a manager profile as admin
+    expect(() => simulateManualProvision('manager@hangout.in', 'uuid-manager-user')).toThrow(
+      /Role escalation rejected: Profile for "manager@hangout.in" has role "manager", not "admin"/
+    );
+
     // User already bound to another profile
-    expect(() => simulateManualProvision('new-role@hangout.in', 'uuid-already-staff')).toThrow(
+    expect(() => simulateManualProvision('admin@hangout.in', 'uuid-already-staff')).toThrow(
       /Email mismatch/
     );
 
-    // Profile already bound to another auth user
-    expect(() => simulateManualProvision('admin@hangout.in', 'uuid-admin-user')).toThrow(
-      /already bound to a different Supabase Auth user/
-    );
-
-    // Fresh confirmed user with matching email succeeds
-    authUsers.push({
-      id: 'uuid-fresh-admin',
-      email: 'owner@hangout.in',
-      email_confirmed_at: '2026-11-20T10:00:00Z',
-    });
-    const result = simulateManualProvision('owner@hangout.in', 'uuid-fresh-admin');
+    // Successful provisioning of the pre-seeded admin profile
+    const result = simulateManualProvision('admin@hangout.in', 'uuid-admin-user');
     expect(result.success).toBe(true);
     expect(result.role_id).toBe('admin');
+    expect(result.email).toBe('admin@hangout.in');
+
+    // Attempting to rebind the already bound admin profile with a different auth user is rejected
+    authUsers.push({
+      id: 'uuid-second-admin',
+      email: 'admin@hangout.in',
+      email_confirmed_at: '2026-11-20T10:00:00Z',
+    });
+    expect(() => simulateManualProvision('admin@hangout.in', 'uuid-second-admin')).toThrow(
+      /already bound to a different Supabase Auth user/
+    );
   });
 
-  it('17. Atomic invitation claiming: simultaneous requests cannot both succeed', () => {
+  it('17. Enforces transaction-level advisory locking to prevent concurrent first-admin provisioning', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const migrationPath = path.resolve(
+      __dirname,
+      '../../supabase/migrations/20250106000000_qr_tracking_and_takeaway_roles.sql'
+    );
+    const migrationContent = fs.readFileSync(migrationPath, 'utf-8');
+
+    // Verify migration SQL contains transaction-level advisory locking
+    expect(migrationContent).toContain(
+      "PERFORM pg_advisory_xact_lock(hashtext('manual_provision_admin_lock')::bigint);"
+    );
+
+    // Concurrent simulation:
+    // Advisory lock serializes transaction 1 and transaction 2
+    let lockHolder: string | null = null;
+    let boundAdminUserId: string | null = null;
+
+    const simulateProvisionTransaction = (txId: string, authUserId: string) => {
+      // Transaction acquires advisory lock
+      if (lockHolder !== null && lockHolder !== txId) {
+        throw new Error('Lock wait timeout or contention');
+      }
+      lockHolder = txId;
+
+      try {
+        if (boundAdminUserId !== null) {
+          throw new Error('Security violation: The staff profile "admin@hangout.in" is already bound to a different Supabase Auth user.');
+        }
+        boundAdminUserId = authUserId;
+        return { success: true, bound_to: authUserId };
+      } finally {
+        // Released when transaction completes
+        lockHolder = null;
+      }
+    };
+
+    // First transaction succeeds
+    const tx1 = simulateProvisionTransaction('tx-1', 'uuid-admin-1');
+    expect(tx1.success).toBe(true);
+    expect(tx1.bound_to).toBe('uuid-admin-1');
+
+    // Concurrent/subsequent transaction trying to bind another user is safely serialized and rejected
+    expect(() => simulateProvisionTransaction('tx-2', 'uuid-admin-2')).toThrow(
+      /already bound to a different Supabase Auth user/
+    );
+  });
+
+  it('18. Atomic invitation claiming: simultaneous requests cannot both succeed', () => {
     const invitation = {
       id: 'inv-manager-42',
       email: 'manager@hangout.in',
@@ -914,7 +995,7 @@ describe('Phase 5: Server-Side Staff Authorization & Security Hardening', () => 
     );
   });
 
-  it('18. Rejects expired and previously claimed invitations', () => {
+  it('19. Rejects expired and previously claimed invitations', () => {
     const expiredInvite = {
       id: 'inv-expired',
       email: 'cashier@hangout.in',
@@ -951,7 +1032,7 @@ describe('Phase 5: Server-Side Staff Authorization & Security Hardening', () => 
     );
   });
 
-  it('19. Direct administrator binding strictly verifies auth.users, matching email, and email confirmation', () => {
+  it('20. Direct administrator binding strictly verifies auth.users, matching email, and email confirmation', () => {
     const authUsers = [
       {
         id: 'uuid-target-confirmed',
@@ -1106,7 +1187,7 @@ describe('Phase 5: Server-Side Staff Authorization & Security Hardening', () => 
     expect(directResult.role_id).toBe('kitchen');
   });
 
-  it('20. Legitimate administrator provisioning and staff invitation claiming succeed', () => {
+  it('21. Legitimate administrator provisioning and staff invitation claiming succeed', () => {
     const staffInvitations: any[] = [];
     const adminUser = { is_admin: true, confirmed: true };
 

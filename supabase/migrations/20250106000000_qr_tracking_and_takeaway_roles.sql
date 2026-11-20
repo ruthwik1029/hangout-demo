@@ -5,8 +5,8 @@
 -- 1. Provisions core operational roles ('admin', 'manager', 'cashier', 'waiter', 'kitchen')
 --    and pre-seeds staff profiles with explicit unlinked auth status (auth_user_id = NULL).
 -- 2. Creates `staff_invitations` table to enforce administrator-controlled staff provisioning.
--- 3. Provides `manual_provision_admin` procedure restricted exclusively to postgres/service_role
---    for initial administrator setup in Supabase SQL Editor after email confirmation.
+-- 3. Provides `manual_provision_admin` procedure restricted exclusively to postgres
+--    with transaction advisory locking for initial administrator setup in Supabase SQL Editor after email confirmation.
 -- 4. Hardens `admin_provision_staff` RPC:
 --    - Restricted to active confirmed Administrators.
 --    - When target auth_user_id is passed, strictly verifies auth.users existence, matching email,
@@ -106,9 +106,13 @@ AS $$
 DECLARE
     v_target_email TEXT;
     v_confirmed_at TIMESTAMPTZ;
+    v_existing_profile public.user_profiles%ROWTYPE;
     v_bound_profile public.user_profiles%ROWTYPE;
 BEGIN
-    -- 1. Strictly verify target user exists in auth.users
+    -- 1. Transaction-level advisory lock to serialize and prevent concurrent first-admin provisioning
+    PERFORM pg_advisory_xact_lock(hashtext('manual_provision_admin_lock')::bigint);
+
+    -- 2. Strictly verify target user exists in auth.users
     SELECT email, email_confirmed_at
     INTO v_target_email, v_confirmed_at
     FROM auth.users
@@ -118,17 +122,31 @@ BEGIN
         RAISE EXCEPTION 'Target user "%" not found in auth.users.', p_auth_user_id;
     END IF;
 
-    -- 2. Strictly verify supplied email matches registered email in auth.users
+    -- 3. Strictly verify supplied email matches registered email in auth.users
     IF LOWER(TRIM(v_target_email)) <> LOWER(TRIM(p_email)) THEN
         RAISE EXCEPTION 'Email mismatch: Target user email "%" does not match supplied email "%".', v_target_email, p_email;
     END IF;
 
-    -- 3. Strictly require confirmed email
+    -- 4. Strictly require confirmed email
     IF v_confirmed_at IS NULL THEN
         RAISE EXCEPTION 'Email "%" must be confirmed in Supabase Auth before provisioning as Administrator.', v_target_email;
     END IF;
 
-    -- 4. Prevent cross-identity jumping / reassignment
+    -- 5. Retrieve existing profile - MUST only bind an existing pre-seeded admin profile; do not create arbitrary profiles
+    SELECT * INTO v_existing_profile
+    FROM public.user_profiles
+    WHERE LOWER(email) = LOWER(TRIM(p_email));
+
+    IF v_existing_profile.id IS NULL THEN
+        RAISE EXCEPTION 'Access denied: No pre-seeded profile found for email "%". Manual provisioning cannot create arbitrary profiles.', p_email;
+    END IF;
+
+    -- 6. Role escalation prevention: Reject any existing profile whose role is not 'admin'
+    IF v_existing_profile.role_id <> 'admin' THEN
+        RAISE EXCEPTION 'Role escalation rejected: Profile for "%" has role "%", not "admin". Manual provisioning only binds pre-seeded admin profiles.', p_email, v_existing_profile.role_id;
+    END IF;
+
+    -- 7. Prevent cross-identity jumping / reassignment
     IF EXISTS (
         SELECT 1 FROM public.user_profiles
         WHERE auth_user_id = p_auth_user_id
@@ -137,24 +155,22 @@ BEGIN
         RAISE EXCEPTION 'Security violation: The target Supabase Auth user is already bound to another staff profile.';
     END IF;
 
-    IF EXISTS (
-        SELECT 1 FROM public.user_profiles
-        WHERE LOWER(email) = LOWER(TRIM(p_email))
-          AND auth_user_id IS NOT NULL
-          AND auth_user_id <> p_auth_user_id
-    ) THEN
+    IF v_existing_profile.auth_user_id IS NOT NULL AND v_existing_profile.auth_user_id <> p_auth_user_id THEN
         RAISE EXCEPTION 'Security violation: The staff profile "%" is already bound to a different Supabase Auth user.', p_email;
     END IF;
 
-    -- 5. Bind or update profile as active Administrator
-    INSERT INTO public.user_profiles (email, full_name, role_id, is_active, auth_user_id, updated_at)
-    VALUES (LOWER(TRIM(p_email)), 'Administrator', 'admin', TRUE, p_auth_user_id, NOW())
-    ON CONFLICT (email) DO UPDATE
+    -- 8. Bind the existing pre-seeded admin profile (strictly no upsert or arbitrary profile creation)
+    UPDATE public.user_profiles
     SET auth_user_id = p_auth_user_id,
-        role_id = 'admin',
         is_active = TRUE,
         updated_at = NOW()
+    WHERE id = v_existing_profile.id
+      AND role_id = 'admin'
     RETURNING * INTO v_bound_profile;
+
+    IF v_bound_profile.id IS NULL THEN
+        RAISE EXCEPTION 'Failed to bind admin profile for "%".', p_email;
+    END IF;
 
     RETURN jsonb_build_object(
         'success', true,
@@ -166,9 +182,10 @@ BEGIN
 END;
 $$;
 
--- Restrict manual provisioning exclusively to database superusers and service role; never accessible to anon or authenticated
-REVOKE ALL ON FUNCTION public.manual_provision_admin(TEXT, UUID) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.manual_provision_admin(TEXT, UUID) TO postgres, service_role;
+-- Restrict manual provisioning exclusively to database superuser (postgres); never accessible to anon, authenticated, or service_role
+REVOKE ALL ON FUNCTION public.manual_provision_admin(TEXT, UUID) FROM PUBLIC, anon, authenticated, service_role;
+REVOKE EXECUTE ON FUNCTION public.manual_provision_admin(TEXT, UUID) FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.manual_provision_admin(TEXT, UUID) TO postgres;
 
 -- Administrative Provisioning RPC: Strictly restricted to active confirmed Administrators
 CREATE OR REPLACE FUNCTION public.admin_provision_staff(
