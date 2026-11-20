@@ -3,25 +3,32 @@
 -- Migration: 20250106000000_qr_tracking_and_takeaway_roles.sql
 -- Description:
 -- 1. Provisions core operational roles ('admin', 'manager', 'cashier', 'waiter', 'kitchen')
---    and pre-seeds authorized staff user profiles.
--- 2. Adds `guest_access_token` column to `public.orders` and indexes it so that
+--    and pre-seeds staff profiles with explicit unlinked auth status (auth_user_id = NULL).
+-- 2. Provides secure self-binding RPC (bind_staff_auth_user) for genuine Supabase Auth users.
+-- 3. Adds `guest_access_token` column to `public.orders` and indexes it so that
 --    customer receipts and bills encode the full tracking token into scannable QR codes.
--- 3. Backfills existing orders with cryptographically secure, unpredictable CSPRNG tokens
---    and syncs matching SHA-256 hashes, preserving all existing orders.
--- 4. Hardens `place_order` RPC with true CSPRNG token generation and dual token storage.
--- 5. Secures `get_admin_orders` RPC to strictly enforce internal staff authorization,
---    preventing anonymous users from harvesting customer orders or guest tokens.
--- 6. Hardens `get_order_by_access_token` to verify token or hash match before returning order details.
--- 7. Hardens `lookup_guest_order` RPC to require exact token match or full 10-digit mobile
---    verification, preventing 4-digit brute-forcing or cross-customer data exposure.
--- 8. Enforces `SECURITY DEFINER`, fixed `search_path = public, extensions, pg_temp`,
---    and explicit least-privilege EXECUTE grants.
+-- 4. Backfills existing orders with cryptographically secure, unpredictable CSPRNG tokens
+--    and syncs matching SHA-256 hashes, preserving all existing orders (including ₹250 demo order).
+-- 5. Hardens `place_order` RPC with true CSPRNG token generation and dual token storage.
+-- 6. Secures `get_admin_orders` RPC:
+--    - Strictly requires authenticated Supabase Auth session (auth.uid()).
+--    - Strictly verifies active linked staff profile in public.user_profiles.
+--    - Drops legacy overloads and REVOKES EXECUTE from anon and PUBLIC.
+--    - Completely blocks anonymous users and unauthorized callers.
+-- 7. Hardens `get_order_by_access_token` to verify token or hash match before returning order details.
+-- 8. Creates `guest_lookup_attempts` table to enforce server-side rate limiting (5 attempts -> 15 min lock).
+-- 9. Hardens `lookup_guest_order` RPC:
+--    - Requires full 10-digit mobile number verification.
+--    - Enforces rate limiting against brute-force harvesting.
+--    - Returns customer order status directly WITHOUT disclosing raw bearer guest_access_tokens.
+-- 10. Enforces `SECURITY DEFINER`, fixed `search_path = public, extensions, pg_temp`,
+--     and explicit least-privilege EXECUTE grants.
 -- ============================================================================
 
 BEGIN;
 
 -- ============================================================================
--- 1. SEED CORE ROLES & AUTHORIZED INTERNAL STAFF PROFILES
+-- 1. SEED CORE ROLES & INTERNAL STAFF PROFILES (DISTINGUISHED AS UNLINKED)
 -- ============================================================================
 
 INSERT INTO public.roles (id, name, description)
@@ -35,44 +42,115 @@ ON CONFLICT (id) DO UPDATE
 SET name = EXCLUDED.name,
     description = EXCLUDED.description;
 
-INSERT INTO public.user_profiles (id, email, full_name, role_id, is_active)
+-- Seed staff profiles with auth_user_id = NULL.
+-- These represent pre-provisioned staff role definitions.
+-- They CANNOT authenticate against get_admin_orders until genuinely bound to a verified Supabase Auth user.
+INSERT INTO public.user_profiles (id, email, full_name, role_id, is_active, auth_user_id)
 VALUES
-    ('00000000-0000-0000-0000-000000000001', 'admin@hangout.in', 'Administrator', 'admin', true),
-    ('00000000-0000-0000-0000-000000000002', 'manager@hangout.in', 'Duty Manager', 'manager', true),
-    ('00000000-0000-0000-0000-000000000003', 'cashier@hangout.in', 'Billing Cashier', 'cashier', true),
-    ('00000000-0000-0000-0000-000000000004', 'staff@hangout.in', 'Floor Staff', 'waiter', true),
-    ('00000000-0000-0000-0000-000000000005', 'kitchen@hangout.in', 'Kitchen Staff', 'kitchen', true)
+    ('00000000-0000-0000-0000-000000000001', 'admin@hangout.in', 'Administrator', 'admin', true, NULL),
+    ('00000000-0000-0000-0000-000000000002', 'manager@hangout.in', 'Duty Manager', 'manager', true, NULL),
+    ('00000000-0000-0000-0000-000000000003', 'cashier@hangout.in', 'Billing Cashier', 'cashier', true, NULL),
+    ('00000000-0000-0000-0000-000000000004', 'staff@hangout.in', 'Floor Staff', 'waiter', true, NULL),
+    ('00000000-0000-0000-0000-000000000005', 'kitchen@hangout.in', 'Kitchen Staff', 'kitchen', true, NULL)
 ON CONFLICT (email) DO UPDATE
 SET full_name = EXCLUDED.full_name,
     role_id = EXCLUDED.role_id,
     is_active = EXCLUDED.is_active;
 
+-- Secure Staff Self-Binding RPC:
+-- Authenticated staff users link their cryptographic auth.uid() to their pre-provisioned profile
+CREATE OR REPLACE FUNCTION public.bind_staff_auth_user()
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, pg_temp
+AS $$
+DECLARE
+    v_uid UUID := auth.uid();
+    v_email TEXT;
+    v_profile public.user_profiles%ROWTYPE;
+BEGIN
+    IF v_uid IS NULL THEN
+        RAISE EXCEPTION 'Access denied: Valid Supabase Auth session required.';
+    END IF;
+
+    SELECT email INTO v_email FROM auth.users WHERE id = v_uid;
+    IF v_email IS NULL THEN
+        RAISE EXCEPTION 'Authenticated user has no verified email address.';
+    END IF;
+
+    UPDATE public.user_profiles
+    SET auth_user_id = v_uid,
+        updated_at = NOW()
+    WHERE email = LOWER(v_email)
+      AND is_active = TRUE
+    RETURNING * INTO v_profile;
+
+    IF v_profile.id IS NULL THEN
+        SELECT * INTO v_profile FROM public.user_profiles WHERE auth_user_id = v_uid;
+        IF v_profile.id IS NULL THEN
+            RETURN jsonb_build_object(
+                'success', false,
+                'message', 'No active staff role profile exists for email: ' || v_email
+            );
+        END IF;
+    END IF;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'profile_id', v_profile.id,
+        'role_id', v_profile.role_id,
+        'full_name', v_profile.full_name,
+        'email', v_profile.email,
+        'is_active', v_profile.is_active
+    );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.bind_staff_auth_user() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.bind_staff_auth_user() TO authenticated;
+
 -- ============================================================================
--- 2. ORDERS TABLE SCHEMA ENHANCEMENT
+-- 2. ORDERS TABLE SCHEMA ENHANCEMENT & CSPRNG BACKFILL
 -- ============================================================================
 
--- Add guest_access_token column if not exists
 ALTER TABLE public.orders
 ADD COLUMN IF NOT EXISTS guest_access_token TEXT;
 
--- Index for rapid lookup by token
 CREATE INDEX IF NOT EXISTS idx_orders_guest_access_token
 ON public.orders (guest_access_token);
 
--- Backfill existing orders with cryptographically secure, unpredictable tokens
--- Uses gen_random_uuid(), clock_timestamp(), random(), and record ID to ensure high entropy
+-- Backfill legacy records using multi-source entropy CSPRNG
 UPDATE public.orders
 SET guest_access_token = encode(sha256((gen_random_uuid()::text || clock_timestamp()::text || random()::text || id::text)::bytea), 'hex')
 WHERE guest_access_token IS NULL;
 
--- Ensure guest_access_token_hash matches guest_access_token for all orders
+-- Synchronize guest_access_token_hash with guest_access_token for all orders
 UPDATE public.orders
 SET guest_access_token_hash = encode(sha256(guest_access_token::bytea), 'hex')
 WHERE guest_access_token IS NOT NULL
   AND (guest_access_token_hash IS NULL OR guest_access_token_hash != encode(sha256(guest_access_token::bytea), 'hex'));
 
 -- ============================================================================
--- 3. PLACE ORDER RPC (DUAL TOKEN PERSISTENCE + CSPRNG GENERATION)
+-- 3. RATE-LIMITING TABLE FOR GUEST ORDER LOOKUPS
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS public.guest_lookup_attempts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_number TEXT NOT NULL UNIQUE,
+    attempt_count INT NOT NULL DEFAULT 1,
+    last_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    locked_until TIMESTAMPTZ DEFAULT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_guest_lookup_attempts_order
+ON public.guest_lookup_attempts (order_number);
+
+-- Restricted: only accessible through SECURITY DEFINER RPCs
+REVOKE ALL ON public.guest_lookup_attempts FROM PUBLIC, anon, authenticated;
+
+-- ============================================================================
+-- 4. PLACE ORDER RPC (DUAL TOKEN PERSISTENCE + CSPRNG GENERATION)
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.place_order(
@@ -521,17 +599,16 @@ REVOKE ALL ON FUNCTION public.place_order(JSONB, JSONB) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.place_order(JSONB, JSONB) TO anon, authenticated;
 
 -- ============================================================================
--- 4. GET ADMIN ORDERS RPC (RESTRICTED TO VERIFIED INTERNAL ROLES)
+-- 5. GET ADMIN ORDERS RPC (STRICT SUPABASE AUTH STAFF ACCESS ONLY)
 -- ============================================================================
 
--- Drop 2-parameter legacy overload to avoid multiple function signature conflict
+-- Drop all legacy overloads
 DROP FUNCTION IF EXISTS public.get_admin_orders(TEXT, INT);
+DROP FUNCTION IF EXISTS public.get_admin_orders(TEXT, INT, TEXT, TEXT);
 
 CREATE OR REPLACE FUNCTION public.get_admin_orders(
     p_status TEXT DEFAULT NULL,
-    p_limit INT DEFAULT 200,
-    p_staff_role TEXT DEFAULT NULL,
-    p_staff_id TEXT DEFAULT NULL
+    p_limit INT DEFAULT 200
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -539,37 +616,29 @@ SECURITY DEFINER
 SET search_path = public, extensions, pg_temp
 AS $$
 DECLARE
-    v_is_authorized BOOLEAN := FALSE;
+    v_uid UUID := auth.uid();
+    v_is_staff BOOLEAN := FALSE;
     v_result JSONB;
 BEGIN
-    -- 1. Check Supabase Auth identity if present
-    IF auth.uid() IS NOT NULL THEN
-        v_is_authorized := public.is_staff();
+    -- 1. Strictly require an authenticated Supabase Auth session
+    IF v_uid IS NULL THEN
+        RAISE EXCEPTION 'Access denied: Valid Supabase Auth credentials required.';
     END IF;
 
-    -- 2. Check internal staff session role & identity
-    IF NOT v_is_authorized AND p_staff_role IS NOT NULL THEN
-        IF LOWER(TRIM(p_staff_role)) IN ('admin', 'manager', 'cashier', 'waiter', 'kitchen') THEN
-            IF p_staff_id IS NOT NULL AND TRIM(p_staff_id) <> '' THEN
-                SELECT EXISTS (
-                    SELECT 1 FROM public.user_profiles up
-                    WHERE (
-                        up.id::text = TRIM(p_staff_id)
-                        OR up.email = TRIM(p_staff_id)
-                        OR up.role_id = LOWER(TRIM(p_staff_role))
-                    )
-                    AND up.is_active = TRUE
-                    AND up.role_id = LOWER(TRIM(p_staff_role))
-                ) INTO v_is_authorized;
-            END IF;
-        END IF;
+    -- 2. Verify active staff role in user_profiles linked to the verified auth.uid()
+    SELECT EXISTS (
+        SELECT 1
+        FROM public.user_profiles up
+        WHERE up.auth_user_id = v_uid
+          AND up.is_active = TRUE
+          AND up.role_id IN ('admin', 'manager', 'cashier', 'waiter', 'kitchen')
+    ) INTO v_is_staff;
+
+    IF NOT v_is_staff THEN
+        RAISE EXCEPTION 'Access denied: Account does not have an active internal staff role.';
     END IF;
 
-    -- 3. Reject any unauthorized or anonymous callers
-    IF NOT v_is_authorized THEN
-        RAISE EXCEPTION 'Access denied: Valid internal staff authorization required to inspect orders.';
-    END IF;
-
+    -- 3. Return internal order records for verified staff
     SELECT COALESCE(jsonb_agg(order_row ORDER BY (order_row->>'created_at') DESC), '[]'::jsonb)
     INTO v_result
     FROM (
@@ -634,11 +703,15 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.get_admin_orders(TEXT, INT, TEXT, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.get_admin_orders(TEXT, INT, TEXT, TEXT) TO anon, authenticated;
+-- Revoke all access from public and anon
+REVOKE ALL ON FUNCTION public.get_admin_orders(TEXT, INT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.get_admin_orders(TEXT, INT) FROM anon;
+
+-- Grant execution ONLY to authenticated users
+GRANT EXECUTE ON FUNCTION public.get_admin_orders(TEXT, INT) TO authenticated;
 
 -- ============================================================================
--- 5. GET ORDER BY ACCESS TOKEN RPC (CUSTOMER ORDER TRACKING)
+-- 6. GET ORDER BY ACCESS TOKEN RPC (CUSTOMER ORDER TRACKING VIA QR BEARER TOKEN)
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.get_order_by_access_token(
@@ -723,12 +796,12 @@ REVOKE ALL ON FUNCTION public.get_order_by_access_token(TEXT, TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.get_order_by_access_token(TEXT, TEXT) TO anon, authenticated;
 
 -- ============================================================================
--- 6. LOOKUP GUEST ORDER RPC (SAFE CUSTOMER OWNERSHIP VERIFICATION)
+-- 7. LOOKUP GUEST ORDER RPC (RATE-LIMITED, DOES NOT DISCLOSE BEARER TOKENS)
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.lookup_guest_order(
     p_order_number TEXT,
-    p_mobile_or_token TEXT
+    p_mobile_number TEXT
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -737,54 +810,141 @@ SET search_path = public, extensions, pg_temp
 AS $$
 DECLARE
     v_clean_mobile TEXT;
-    v_token_hash TEXT;
-    v_order_id UUID;
-    v_token TEXT;
     v_order_num TEXT;
+    v_attempt public.guest_lookup_attempts%ROWTYPE;
+    v_order public.orders%ROWTYPE;
+    v_items JSONB;
 BEGIN
     IF p_order_number IS NULL OR TRIM(p_order_number) = '' THEN
-        RAISE EXCEPTION 'Order number is required';
-    END IF;
-    IF p_mobile_or_token IS NULL OR TRIM(p_mobile_or_token) = '' THEN
-        RAISE EXCEPTION 'Mobile number or access token is required';
-    END IF;
-
-    v_clean_mobile := regexp_replace(p_mobile_or_token, '\D', '', 'g');
-    v_token_hash := encode(sha256(TRIM(p_mobile_or_token)::bytea), 'hex');
-
-    SELECT o.id, o.guest_access_token, o.order_number
-    INTO v_order_id, v_token, v_order_num
-    FROM public.orders o
-    WHERE (
-        UPPER(TRIM(o.order_number)) = UPPER(TRIM(p_order_number))
-        OR o.id::text = TRIM(p_order_number)
-        OR UPPER(TRIM(o.order_number)) = UPPER(TRIM(regexp_replace(p_order_number, '^#', '')))
-    )
-    AND (
-        -- Token verification (exact raw token or SHA-256 hash)
-        o.guest_access_token = TRIM(p_mobile_or_token)
-        OR o.guest_access_token_hash = v_token_hash
-        -- Mobile verification (requires full 10-digit customer mobile match)
-        OR (
-            LENGTH(v_clean_mobile) >= 10
-            AND RIGHT(regexp_replace(COALESCE(o.customer_mobile_snapshot, ''), '\D', '', 'g'), 10) = RIGHT(v_clean_mobile, 10)
-        )
-    )
-    LIMIT 1;
-
-    IF v_order_id IS NULL THEN
         RETURN jsonb_build_object(
             'success', false,
-            'message', 'Order not found or the mobile number / token provided did not match this order'
+            'error', 'MISSING_ORDER_NUMBER',
+            'message', 'Order number is required.'
+        );
+    END IF;
+    IF p_mobile_number IS NULL OR TRIM(p_mobile_number) = '' THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'MISSING_MOBILE_NUMBER',
+            'message', '10-digit mobile number is required.'
         );
     END IF;
 
-    RETURN jsonb_build_object(
-        'success', true,
-        'order_id', v_order_id,
-        'order_number', v_order_num,
-        'guest_access_token', v_token
-    );
+    v_order_num := UPPER(TRIM(regexp_replace(p_order_number, '^#', '')));
+    v_clean_mobile := regexp_replace(p_mobile_number, '\D', '', 'g');
+
+    -- Require full 10-digit mobile number to prevent partial guessing
+    IF LENGTH(v_clean_mobile) < 10 THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'INVALID_MOBILE',
+            'message', 'Please enter a valid 10-digit mobile number for order verification.'
+        );
+    END IF;
+
+    -- 1. Check Rate Limiting & Lockout Status
+    SELECT * INTO v_attempt FROM public.guest_lookup_attempts WHERE order_number = v_order_num;
+    IF FOUND AND v_attempt.locked_until IS NOT NULL AND v_attempt.locked_until > NOW() THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'RATE_LIMITED',
+            'message', 'Too many failed verification attempts for this order. Please try again in ' ||
+                       CEIL(EXTRACT(EPOCH FROM (v_attempt.locked_until - NOW())) / 60.0)::TEXT || ' minutes, or scan your bill QR code.'
+        );
+    END IF;
+
+    -- 2. Fetch Target Order
+    SELECT * INTO v_order
+    FROM public.orders
+    WHERE UPPER(TRIM(order_number)) = v_order_num
+       OR id::text = p_order_number;
+
+    IF v_order.id IS NULL THEN
+        -- Record failed attempt to protect against order enumeration
+        INSERT INTO public.guest_lookup_attempts (order_number, attempt_count, last_attempt_at)
+        VALUES (v_order_num, 1, NOW())
+        ON CONFLICT (order_number) DO UPDATE
+        SET attempt_count = public.guest_lookup_attempts.attempt_count + 1,
+            last_attempt_at = NOW(),
+            locked_until = CASE
+                WHEN public.guest_lookup_attempts.attempt_count + 1 >= 5 THEN NOW() + INTERVAL '15 minutes'
+                ELSE NULL
+            END;
+
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'NOT_FOUND',
+            'message', 'Order not found. Please check your order number.'
+        );
+    END IF;
+
+    -- 3. Verify Exact 10-Digit Mobile Number Match
+    IF RIGHT(regexp_replace(COALESCE(v_order.customer_mobile_snapshot, ''), '\D', '', 'g'), 10) = RIGHT(v_clean_mobile, 10) THEN
+        -- Verification SUCCESS: Reset rate limit attempts
+        DELETE FROM public.guest_lookup_attempts WHERE order_number = v_order_num;
+
+        -- Fetch order items for the verified customer receipt view
+        SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'id', oi.id,
+            'order_id', oi.order_id,
+            'menu_item_id', oi.menu_item_id,
+            'item_name_snapshot', oi.item_name_snapshot,
+            'is_veg', oi.is_veg,
+            'unit_price', oi.unit_price,
+            'quantity', oi.quantity,
+            'total_price', (oi.unit_price * oi.quantity),
+            'variant_name_snapshot', oi.variant_name_snapshot,
+            'selected_addons', oi.selected_addons,
+            'item_subtotal', oi.item_subtotal
+        ) ORDER BY oi.created_at ASC), '[]'::jsonb)
+        INTO v_items
+        FROM public.order_items oi
+        WHERE oi.order_id = v_order.id;
+
+        -- Return customer order status WITHOUT disclosing the raw bearer guest_access_token
+        RETURN jsonb_build_object(
+            'success', true,
+            'order', jsonb_build_object(
+                'id', v_order.id,
+                'order_number', v_order.order_number,
+                'order_type', v_order.order_type,
+                'table_number_snapshot', v_order.table_number_snapshot,
+                'pickup_time_slot', v_order.pickup_time_slot,
+                'pickup_slot_snapshot', COALESCE(v_order.pickup_slot_snapshot, v_order.pickup_time_slot),
+                'customer_name_snapshot', v_order.customer_name_snapshot,
+                'customer_mobile_snapshot', 'XXXXXX' || RIGHT(v_clean_mobile, 4),
+                'subtotal', v_order.subtotal,
+                'discount_amount', v_order.discount_amount,
+                'tax_amount', v_order.tax_amount,
+                'tax_breakdown', v_order.tax_breakdown,
+                'total_amount', v_order.total_amount,
+                'payment_method', v_order.payment_method,
+                'payment_status', v_order.payment_status,
+                'order_status', v_order.order_status,
+                'status', v_order.order_status,
+                'created_at', v_order.created_at,
+                'updated_at', v_order.updated_at,
+                'items', v_items
+            )
+        );
+    ELSE
+        -- Verification FAILED: Increment attempt count and trigger rate limit lockout if threshold reached
+        INSERT INTO public.guest_lookup_attempts (order_number, attempt_count, last_attempt_at)
+        VALUES (v_order_num, 1, NOW())
+        ON CONFLICT (order_number) DO UPDATE
+        SET attempt_count = public.guest_lookup_attempts.attempt_count + 1,
+            last_attempt_at = NOW(),
+            locked_until = CASE
+                WHEN public.guest_lookup_attempts.attempt_count + 1 >= 5 THEN NOW() + INTERVAL '15 minutes'
+                ELSE NULL
+            END;
+
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'VERIFICATION_FAILED',
+            'message', 'The mobile number provided did not match the registered number for this order.'
+        );
+    END IF;
 END;
 $$;
 

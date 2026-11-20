@@ -1345,28 +1345,11 @@ export async function fetchOrders(filter?: {
 
   if (isSupabaseConfigured()) {
     try {
-      let staffRole: string | null = null;
-      let staffId: string | null = null;
-      try {
-        if (typeof localStorage !== 'undefined') {
-          const staffSession = localStorage.getItem('hangout_staff_session');
-          if (staffSession) {
-            const parsed = JSON.parse(staffSession);
-            staffRole = parsed.role_id || parsed.role || null;
-            staffId = parsed.id || parsed.email || null;
-          }
-        }
-      } catch {
-        // ignore parsing issues
-      }
-
       // 1. Authoritative SECURITY DEFINER RPC: Retrieves authoritative orders with items
-      // Protected by internal staff authorization check in Postgres
+      // Protected by strict Supabase Auth session & active internal staff role verification in Postgres
       const { data: rpcData, error: rpcErr } = await supabase.rpc('get_admin_orders', {
         p_status: filter?.status && filter.status !== 'ALL' ? filter.status : null,
         p_limit: 200,
-        p_staff_role: staffRole,
-        p_staff_id: staffId,
       });
 
       if (!rpcErr && Array.isArray(rpcData)) {
@@ -1377,20 +1360,8 @@ export async function fetchOrders(filter?: {
           items: Array.isArray(o.items) ? o.items : [],
         }));
       } else if (rpcErr) {
-        // Fallback: direct table select if RPC not yet deployed
-        const { data: rawOrders, error: rawErr } = await supabase
-          .from('orders')
-          .select('*, items:order_items(*)')
-          .order('created_at', { ascending: false });
-
-        if (!rawErr && Array.isArray(rawOrders)) {
-          serverOrders = rawOrders.map((o: any) => ({
-            ...o,
-            status: (o.status || o.order_status) as OrderStatus,
-            order_status: (o.order_status || o.status) as OrderStatus,
-            items: Array.isArray(o.items) ? o.items : [],
-          }));
-        }
+        // Anonymous or unauthenticated clients are denied access as intended by Postgres RLS & Grants
+        // Do not attempt an insecure client-side table dump.
       }
     } catch (err) {
       console.warn('Supabase fetchOrders network attempt failed, using local store:', err);
@@ -1501,13 +1472,22 @@ export async function fetchOrderById(idOrNumber: string, guestAccessToken?: stri
   }
 
   const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
-  return (
-    orders.find(
-      (o) =>
-        o.id === idOrNumber ||
-        o.order_number.toLowerCase() === idOrNumber.toLowerCase()
-    ) || null
+  const found = orders.find(
+    (o) =>
+      o.id.toLowerCase() === idOrNumber.toLowerCase() ||
+      o.order_number.toLowerCase() === idOrNumber.toLowerCase()
   );
+
+  if (found) {
+    if (guestAccessToken) {
+      if (found.guest_access_token && found.guest_access_token !== guestAccessToken) {
+        return null; // Bearer token verification failed
+      }
+    }
+    return found;
+  }
+
+  return null;
 }
 
 export async function lookupGuestOrder(
@@ -1516,45 +1496,46 @@ export async function lookupGuestOrder(
 ): Promise<Order | null> {
   if (!idOrNumber || !mobileOrToken) return null;
 
+  const cleanMobile = mobileOrToken.replace(/\D/g, '');
+
   if (isSupabaseConfigured()) {
     try {
       const { data: rpcRes, error } = await supabase.rpc('lookup_guest_order', {
         p_order_number: idOrNumber,
-        p_mobile_or_token: mobileOrToken,
+        p_mobile_number: mobileOrToken,
       });
 
-      if (!error && rpcRes && rpcRes.success && rpcRes.order_id) {
-        const order = await fetchOrderById(rpcRes.order_id, rpcRes.guest_access_token);
-        if (order) {
-          if (typeof localStorage !== 'undefined' && rpcRes.guest_access_token) {
-            localStorage.setItem(`hangout_guest_token_${order.id}`, rpcRes.guest_access_token);
-            localStorage.setItem(`hangout_guest_token_${order.order_number}`, rpcRes.guest_access_token);
-          }
-          return order;
-        }
+      if (!error && rpcRes && rpcRes.success && rpcRes.order) {
+        const o = rpcRes.order;
+        return {
+          ...o,
+          status: (o.status || o.order_status) as OrderStatus,
+          order_status: (o.order_status || o.status) as OrderStatus,
+          items: Array.isArray(o.items) ? o.items : [],
+        };
+      } else if (rpcRes && rpcRes.error === 'RATE_LIMITED') {
+        throw new Error(rpcRes.message || 'Too many failed verification attempts. Please try again after 15 minutes.');
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Too many failed')) {
+        throw err;
+      }
       // Fall through to local fallback
     }
   }
 
-  const clean = mobileOrToken.replace(/\D/g, '');
+  // Local store fallback: requires full 10-digit mobile verification OR exact bearer token
   const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const normalizedInput = idOrNumber.trim().toLowerCase().replace(/^#/, '');
+
   const found = orders.find(
     (o) =>
-      (o.id === idOrNumber || o.order_number.toLowerCase() === idOrNumber.toLowerCase()) &&
+      (o.id.toLowerCase() === normalizedInput || o.order_number.toLowerCase().replace(/^#/, '') === normalizedInput) &&
       (o.guest_access_token === mobileOrToken ||
-        (clean.length >= 10 &&
+        (cleanMobile.length >= 10 &&
           o.customer_mobile_snapshot &&
-          o.customer_mobile_snapshot.replace(/\D/g, '').endsWith(clean.slice(-10))))
+          o.customer_mobile_snapshot.replace(/\D/g, '').endsWith(cleanMobile.slice(-10))))
   );
-
-  if (found && typeof localStorage !== 'undefined') {
-    if (found.guest_access_token) {
-      localStorage.setItem(`hangout_guest_token_${found.id}`, found.guest_access_token);
-      localStorage.setItem(`hangout_guest_token_${found.order_number}`, found.guest_access_token);
-    }
-  }
 
   return found || null;
 }
