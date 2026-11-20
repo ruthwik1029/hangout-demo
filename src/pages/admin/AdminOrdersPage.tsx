@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { AdminNav } from '../../components/admin/AdminNav';
 import { fetchOrders, updateOrderStatus } from '../../lib/supabase';
+import { useRealtimeOperationalSync } from '../../lib/realtime';
 import { Order, OrderStatus } from '../../types';
 import { Button } from '../../components/common/Button';
 import { Modal } from '../../components/common/Modal';
@@ -44,21 +45,32 @@ export const AdminOrdersPage: React.FC = () => {
   // Status Action Loading
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
 
-  const loadOrders = async () => {
-    setLoading(true);
+  const loadOrders = useCallback(async () => {
     const data = await fetchOrders();
     setOrders(data);
     setLoading(false);
-  };
+  }, []);
 
   useEffect(() => {
     loadOrders();
-    const interval = setInterval(async () => {
-      const refreshed = await fetchOrders();
-      setOrders(refreshed);
+    const interval = setInterval(() => {
+      loadOrders();
     }, 6000);
-    return () => clearInterval(interval);
-  }, []);
+
+    const handleFocus = () => loadOrders();
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [loadOrders]);
+
+  useRealtimeOperationalSync(
+    useCallback(() => {
+      loadOrders();
+    }, [loadOrders])
+  );
 
   // Filtered Orders List
   const filteredOrders = useMemo(() => {

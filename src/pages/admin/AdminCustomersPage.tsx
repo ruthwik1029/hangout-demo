@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { AdminNav } from '../../components/admin/AdminNav';
 import { fetchAdminCustomers, fetchCustomerOrders, recordAdminAction } from '../../lib/supabase';
+import { useRealtimeOperationalSync } from '../../lib/realtime';
 import { Customer, Order } from '../../types';
 import { Button } from '../../components/common/Button';
 import { Drawer } from '../../components/common/Drawer';
@@ -56,12 +57,29 @@ export const AdminCustomersPage: React.FC = () => {
   const [loadingOrders, setLoadingOrders] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
-  useEffect(() => {
-    fetchAdminCustomers().then((data) => {
+  const loadCustomers = useCallback(async () => {
+    try {
+      const data = await fetchAdminCustomers();
       setCustomers(data);
+    } catch (err) {
+      console.error('Failed to load customers:', err);
+    } finally {
       setLoading(false);
-    });
+    }
   }, []);
+
+  useEffect(() => {
+    loadCustomers();
+    const handleFocus = () => loadCustomers();
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [loadCustomers]);
+
+  useRealtimeOperationalSync(
+    useCallback(() => {
+      loadCustomers();
+    }, [loadCustomers])
+  );
 
   const handleOpenCustomerOrders = async (cust: Customer) => {
     setSelectedCustomer(cust);

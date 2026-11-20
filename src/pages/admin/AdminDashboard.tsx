@@ -9,6 +9,7 @@ import {
   fetchAdminActivityLogs,
   recordAdminAction,
 } from '../../lib/supabase';
+import { useRealtimeOperationalSync } from '../../lib/realtime';
 import { Order, Customer, CafeSettings, AdminActivityLog } from '../../types';
 import { Button } from '../../components/common/Button';
 import { useToast } from '../../context/ToastContext';
@@ -30,6 +31,7 @@ import {
   QrCode,
   Activity,
   Filter,
+  RefreshCw,
 } from 'lucide-react';
 
 export const AdminDashboard: React.FC = () => {
@@ -43,8 +45,11 @@ export const AdminDashboard: React.FC = () => {
   const [timeFilter, setTimeFilter] = useState<'today' | 'week' | 'all'>('today');
   const [activityCategoryFilter, setActivityCategoryFilter] = useState<string>('ALL');
   const [isTogglingPause, setIsTogglingPause] = useState(false);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (isManualRefresh = false) => {
+    if (isManualRefresh) setIsRefreshing(true);
     try {
       const [allOrders, allCustomers, cafeSettings, logs] = await Promise.all([
         fetchOrders(),
@@ -58,12 +63,46 @@ export const AdminDashboard: React.FC = () => {
       setActivityLogs(logs);
     } catch (err) {
       console.error('Failed to load dashboard data:', err);
+    } finally {
+      setIsLoading(false);
+      if (isManualRefresh) setIsRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
     loadData();
+
+    // 1. Periodic background refresh every 10 seconds to sync authoritative state across devices
+    const interval = setInterval(() => {
+      loadData();
+    }, 10000);
+
+    // 2. Refresh immediately when window/tab regains focus or visibility (e.g. switching back on mobile)
+    const handleFocus = () => {
+      loadData();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        loadData();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [loadData]);
+
+  // 3. Operational Realtime Synchronization: trigger data refresh on any incoming business event
+  useRealtimeOperationalSync(
+    useCallback(() => {
+      loadData();
+    }, [loadData])
+  );
 
   // Filter orders by time window
   const filteredOrders = useMemo(() => {
@@ -84,13 +123,18 @@ export const AdminDashboard: React.FC = () => {
     });
   }, [orders, timeFilter]);
 
-  // Aggregate Metrics
+  // Aggregate Metrics (Honest Financial Accounting)
   const metrics = useMemo(() => {
+    // Settled Revenue = ONLY orders that have been paid and not cancelled/rejected
+    const settledOrders = filteredOrders.filter(
+      (o) => o.payment_status === 'PAID' && o.status !== 'CANCELLED' && o.status !== 'REJECTED'
+    );
+
+    const totalRevenue = settledOrders.reduce((acc, o) => acc + o.total_amount, 0);
+
     const validOrders = filteredOrders.filter(
       (o) => o.status !== 'CANCELLED' && o.status !== 'REJECTED'
     );
-
-    const totalRevenue = validOrders.reduce((acc, o) => acc + o.total_amount, 0);
 
     const pendingCount = filteredOrders.filter((o) => o.status === 'PENDING').length;
     const completedCount = filteredOrders.filter((o) => o.status === 'COMPLETED').length;
@@ -98,7 +142,7 @@ export const AdminDashboard: React.FC = () => {
       (o) => o.status === 'CANCELLED' || o.status === 'REJECTED'
     ).length;
 
-    const paidOrders = filteredOrders.filter((o) => o.payment_status === 'PAID');
+    const paidOrders = settledOrders;
     const aov = paidOrders.length > 0 ? totalRevenue / paidOrders.length : 0;
 
     // Best seller item
@@ -299,6 +343,16 @@ export const AdminDashboard: React.FC = () => {
             <Calendar className="w-3.5 h-3.5" />
             {filteredOrders.length} orders
           </span>
+          <button
+            type="button"
+            onClick={() => loadData(true)}
+            disabled={isRefreshing || isLoading}
+            className="p-1.5 rounded-lg text-brand-muted hover:text-brand-black hover:bg-brand-soft-yellow/50 transition-all border border-transparent hover:border-brand-border"
+            title="Synchronize authoritative data from Supabase across all devices"
+            aria-label="Refresh dashboard data"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-brand-black' : ''}`} />
+          </button>
         </div>
 
         {/* Quick Actions Shortcuts */}

@@ -1318,6 +1318,20 @@ export async function createOrder(
   });
   setLocalStore(LOCAL_STORAGE_STATUS_HISTORY, history);
 
+  // Broadcast operational event for cross-device/tab synchronization
+  publishRealtimeEvent({
+    type: 'ORDER_CREATED',
+    orderId: createdOrder.id,
+    status: createdOrder.order_status,
+    tableId: createdOrder.table_id || undefined,
+    tableNumber: createdOrder.table_number_snapshot || undefined,
+    payload: {
+      orderNumber: createdOrder.order_number,
+      totalAmount: createdOrder.total_amount,
+      paymentStatus: createdOrder.payment_status,
+    },
+  });
+
   return createdOrder;
 }
 
@@ -1327,10 +1341,84 @@ export async function fetchOrders(filter?: {
   paymentStatus?: string;
   search?: string;
 }): Promise<Order[]> {
+  let serverOrders: Order[] | null = null;
+
+  if (isSupabaseConfigured()) {
+    try {
+      // 1. Authoritative SECURITY DEFINER RPC: Retrieves authoritative orders with items
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('get_admin_orders', {
+        p_status: filter?.status && filter.status !== 'ALL' ? filter.status : null,
+      });
+
+      if (!rpcErr && Array.isArray(rpcData)) {
+        serverOrders = rpcData.map((o: any) => ({
+          ...o,
+          status: (o.status || o.order_status) as OrderStatus,
+          order_status: (o.order_status || o.status) as OrderStatus,
+          items: Array.isArray(o.items) ? o.items : [],
+        }));
+      } else if (rpcErr) {
+        // Fallback: direct table select if RPC not yet deployed
+        const { data: rawOrders, error: rawErr } = await supabase
+          .from('orders')
+          .select('*, items:order_items(*)')
+          .order('created_at', { ascending: false });
+
+        if (!rawErr && Array.isArray(rawOrders)) {
+          serverOrders = rawOrders.map((o: any) => ({
+            ...o,
+            status: (o.status || o.order_status) as OrderStatus,
+            order_status: (o.order_status || o.status) as OrderStatus,
+            items: Array.isArray(o.items) ? o.items : [],
+          }));
+        }
+      }
+    } catch (err) {
+      console.warn('Supabase fetchOrders network attempt failed, using local store:', err);
+    }
+  }
+
+  // Authoritative Server Data Reconciliation:
+  // When server orders are retrieved, server data is authoritative across devices.
+  if (serverOrders !== null) {
+    const localOrders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+    const serverIds = new Set(serverOrders.map((o) => o.id));
+
+    // Preserve any local uncommitted temporary orders that are not on the server
+    const localPending = localOrders.filter(
+      (o) => !serverIds.has(o.id) && o.id.startsWith('temp-')
+    );
+
+    const reconciled = [...serverOrders, ...localPending];
+    setLocalStore(LOCAL_STORAGE_ORDERS, reconciled);
+
+    let result = reconciled;
+    if (filter?.status && filter.status !== 'ALL') {
+      result = result.filter((o) => (o.status || o.order_status) === filter.status);
+    }
+    if (filter?.orderType && filter.orderType !== 'ALL') {
+      result = result.filter((o) => o.order_type === filter.orderType);
+    }
+    if (filter?.paymentStatus && filter.paymentStatus !== 'ALL') {
+      result = result.filter((o) => o.payment_status === filter.paymentStatus);
+    }
+    if (filter?.search?.trim()) {
+      const q = filter.search.toLowerCase().trim();
+      result = result.filter(
+        (o) =>
+          o.order_number.toLowerCase().includes(q) ||
+          (o.customer_name_snapshot && o.customer_name_snapshot.toLowerCase().includes(q)) ||
+          (o.customer_mobile_snapshot && o.customer_mobile_snapshot.includes(q))
+      );
+    }
+    return result;
+  }
+
+  // Fallback to local store when Supabase is unconfigured or unavailable
   let orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
 
   if (filter?.status && filter.status !== 'ALL') {
-    orders = orders.filter((o) => o.order_status === filter.status);
+    orders = orders.filter((o) => (o.status || o.order_status) === filter.status);
   }
   if (filter?.orderType && filter.orderType !== 'ALL') {
     orders = orders.filter((o) => o.order_type === filter.orderType);
@@ -1343,8 +1431,8 @@ export async function fetchOrders(filter?: {
     orders = orders.filter(
       (o) =>
         o.order_number.toLowerCase().includes(q) ||
-        o.customer_name_snapshot.toLowerCase().includes(q) ||
-        o.customer_mobile_snapshot.includes(q)
+        (o.customer_name_snapshot && o.customer_name_snapshot.toLowerCase().includes(q)) ||
+        (o.customer_mobile_snapshot && o.customer_mobile_snapshot.includes(q))
     );
   }
 
@@ -1392,7 +1480,7 @@ export async function fetchCustomerOrders(
   mobileNumberOrId: string
 ): Promise<Order[]> {
   const clean = mobileNumberOrId.replace(/\D/g, '').slice(-10);
-  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const orders = await fetchOrders();
   return orders.filter(
     (o) =>
       o.customer_id === mobileNumberOrId ||
@@ -1700,6 +1788,19 @@ export async function processSimulatedPayment(params: {
   txns.push(transactionObj);
   setLocalStore(LOCAL_STORAGE_TRANSACTIONS, txns);
 
+  // Broadcast operational payment event for multi-device synchronization
+  publishRealtimeEvent({
+    type: 'ORDER_STATUS_CHANGED',
+    orderId: params.orderId,
+    status: paymentStatus === 'PAID' ? 'PAID' : 'PAYMENT_PENDING',
+    payload: {
+      paymentStatus,
+      amount: params.amount,
+      method: params.paymentMethod,
+      transactionRef: transactionObj.transaction_reference,
+    },
+  });
+
   return {
     success: isSuccess || isPayLater,
     payment: paymentObj,
@@ -1715,7 +1816,7 @@ export const confirmDemoPayment = processSimulatedPayment;
 // ---------------------------------------------------------------------------
 export async function fetchAdminCustomers(searchQuery?: string): Promise<Customer[]> {
   let customers = getLocalStore<Customer[]>(LOCAL_STORAGE_CUSTOMERS, INITIAL_CUSTOMERS);
-  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const orders = await fetchOrders();
 
   // Derive dynamic stats from actual stored orders
   customers = customers.map((c) => {

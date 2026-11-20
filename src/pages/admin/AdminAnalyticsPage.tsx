@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { AdminNav } from '../../components/admin/AdminNav';
 import { fetchOrders } from '../../lib/supabase';
+import { useRealtimeOperationalSync } from '../../lib/realtime';
 import { Order } from '../../types';
 import {
   TrendingUp,
@@ -25,12 +26,38 @@ export const AdminAnalyticsPage: React.FC = () => {
   const [customEnd, setCustomEnd] = useState<string>('');
   const [isCustomDate, setIsCustomDate] = useState<boolean>(false);
 
-  useEffect(() => {
-    fetchOrders().then((data) => {
+  const loadOrders = useCallback(async () => {
+    try {
+      const data = await fetchOrders();
       setOrders(data);
+    } catch (err) {
+      console.error('Failed to load analytics orders:', err);
+    } finally {
       setLoading(false);
-    });
+    }
   }, []);
+
+  useEffect(() => {
+    loadOrders();
+
+    const interval = setInterval(() => {
+      loadOrders();
+    }, 10000);
+
+    const handleFocus = () => loadOrders();
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [loadOrders]);
+
+  useRealtimeOperationalSync(
+    useCallback(() => {
+      loadOrders();
+    }, [loadOrders])
+  );
 
   // Filter orders based on selected period
   const filteredOrders = useMemo(() => {
