@@ -160,13 +160,13 @@ export const PortalLogin: React.FC = () => {
             </div>
             <div>
               <label className="block text-[11px] font-bold text-brand-muted mb-1 uppercase">
-                Staff Provisioning Code <span className="text-[10px] text-brand-charcoal/50 font-normal lowercase">(required only for initial account binding)</span>
+                Staff Invitation Code <span className="text-[10px] text-brand-charcoal/50 font-normal lowercase">(required only when claiming a staff invitation)</span>
               </label>
               <input
                 type="text"
                 value={provisioningCode}
                 onChange={(e) => setProvisioningCode(e.target.value)}
-                placeholder="Enter provisioning code (if claiming access)"
+                placeholder="Enter staff invitation code"
                 className="w-full px-3 py-2 text-xs rounded-xl border border-brand-border focus:border-brand-black focus:outline-none"
               />
             </div>

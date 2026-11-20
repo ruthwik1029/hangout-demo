@@ -5,14 +5,13 @@
 -- 1. Provisions core operational roles ('admin', 'manager', 'cashier', 'waiter', 'kitchen')
 --    and pre-seeds staff profiles with explicit unlinked auth status (auth_user_id = NULL).
 -- 2. Creates `staff_invitations` table to enforce administrator-controlled staff provisioning.
--- 3. Provides `bootstrap_first_admin` RPC for secure one-time initial setup using an external secret
---    configured outside Git (app.settings.admin_bootstrap_secret), permanently disabled once an admin exists.
--- 4. Provides `manual_provision_admin` procedure restricted exclusively to postgres/service_role.
--- 5. Hardens `admin_provision_staff` RPC:
+-- 3. Provides `manual_provision_admin` procedure restricted exclusively to postgres/service_role
+--    for initial administrator setup in Supabase SQL Editor after email confirmation.
+-- 4. Hardens `admin_provision_staff` RPC:
 --    - Restricted to active confirmed Administrators.
 --    - When target auth_user_id is passed, strictly verifies auth.users existence, matching email,
 --      confirmed email status, and prevents cross-profile reassignment.
--- 6. Hardens `bind_staff_auth_user` RPC:
+-- 5. Hardens `bind_staff_auth_user` RPC:
 --    - Requires genuine `auth.uid()`.
 --    - Strictly verifies that `auth.users.email_confirmed_at IS NOT NULL`.
 --    - Enforces account identity immutability: prevents role jumping if email is modified.
@@ -20,7 +19,7 @@
 --      unclaimed & unexpired validation, and conditional update with ROW_COUNT check.
 --    - Blocks arbitrary self-registration from claiming pre-seeded profiles without an
 --      authorized administrator invitation and matching provisioning code.
--- 5. Secures `get_admin_orders` RPC:
+-- 6. Secures `get_admin_orders` RPC:
 --    - Strictly requires authenticated Supabase Auth session with confirmed email.
 --    - Enforces field-level least-privilege: raw `guest_access_token` and unmasked contact
 --      info are restricted to billing roles ('admin', 'manager', 'cashier');
@@ -94,93 +93,7 @@ ON public.staff_invitations (LOWER(email));
 
 REVOKE ALL ON public.staff_invitations FROM PUBLIC, anon, authenticated;
 
--- First-Administrator One-Time Bootstrap RPC
--- Requires confirmed email and an explicit secret configured outside the repository
--- via database parameter: app.settings.admin_bootstrap_secret
--- Automatically permanently disabled once any active administrator exists.
-CREATE OR REPLACE FUNCTION public.bootstrap_first_admin(
-    p_bootstrap_secret TEXT
-)
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, auth, pg_temp
-AS $$
-DECLARE
-    v_uid UUID := auth.uid();
-    v_email TEXT;
-    v_email_confirmed_at TIMESTAMPTZ;
-    v_has_active_admin BOOLEAN := FALSE;
-    v_configured_secret TEXT;
-    v_bound_profile public.user_profiles%ROWTYPE;
-BEGIN
-    -- 1. Strictly require authenticated Supabase Auth user
-    IF v_uid IS NULL THEN
-        RAISE EXCEPTION 'Access denied: Valid Supabase Auth session required.';
-    END IF;
-
-    -- 2. Strictly require confirmed email
-    SELECT email, email_confirmed_at
-    INTO v_email, v_email_confirmed_at
-    FROM auth.users
-    WHERE id = v_uid;
-
-    IF v_email IS NULL THEN
-        RAISE EXCEPTION 'Access denied: Authenticated user has no registered email address.';
-    END IF;
-
-    IF v_email_confirmed_at IS NULL THEN
-        RAISE EXCEPTION 'Access denied: Email address "%" must be confirmed before claiming administrative access.', v_email;
-    END IF;
-
-    -- 3. One-Time Guarantee: Ensure no active administrator already exists in the system
-    SELECT EXISTS (
-        SELECT 1 FROM public.user_profiles
-        WHERE role_id = 'admin'
-          AND auth_user_id IS NOT NULL
-          AND is_active = TRUE
-    ) INTO v_has_active_admin;
-
-    IF v_has_active_admin THEN
-        RAISE EXCEPTION 'Access denied: The system has already been bootstrapped with an active Administrator. Subsequent staff must be provisioned by an Administrator.';
-    END IF;
-
-    -- 4. Check explicit secret configured outside repository
-    -- Set outside Git via: ALTER DATABASE postgres SET app.settings.admin_bootstrap_secret = '<secure_random_token>';
-    v_configured_secret := NULLIF(TRIM(current_setting('app.settings.admin_bootstrap_secret', true)), '');
-
-    IF v_configured_secret IS NULL THEN
-        RAISE EXCEPTION 'Access denied: First-administrator bootstrap secret has not been configured in database settings.';
-    END IF;
-
-    IF p_bootstrap_secret IS NULL OR TRIM(p_bootstrap_secret) = '' OR TRIM(p_bootstrap_secret) <> v_configured_secret THEN
-        RAISE EXCEPTION 'Access denied: Invalid administrator bootstrap secret.';
-    END IF;
-
-    -- 5. Bind caller as Administrator
-    INSERT INTO public.user_profiles (email, full_name, role_id, is_active, auth_user_id, updated_at)
-    VALUES (LOWER(v_email), 'Administrator', 'admin', TRUE, v_uid, NOW())
-    ON CONFLICT (email) DO UPDATE
-    SET auth_user_id = v_uid,
-        role_id = 'admin',
-        is_active = TRUE,
-        updated_at = NOW()
-    RETURNING * INTO v_bound_profile;
-
-    RETURN jsonb_build_object(
-        'success', true,
-        'message', 'First administrator successfully bootstrapped.',
-        'profile_id', v_bound_profile.id,
-        'role_id', 'admin',
-        'email', v_bound_profile.email
-    );
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.bootstrap_first_admin(TEXT) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.bootstrap_first_admin(TEXT) TO authenticated;
-
--- Secure Manual Administrator Provisioning Procedure (for direct DB owner setup outside Git)
+-- Secure Manual Administrator Provisioning Procedure (for direct DB owner setup in Supabase SQL Editor outside Git)
 CREATE OR REPLACE FUNCTION public.manual_provision_admin(
     p_email TEXT,
     p_auth_user_id UUID
@@ -195,6 +108,7 @@ DECLARE
     v_confirmed_at TIMESTAMPTZ;
     v_bound_profile public.user_profiles%ROWTYPE;
 BEGIN
+    -- 1. Strictly verify target user exists in auth.users
     SELECT email, email_confirmed_at
     INTO v_target_email, v_confirmed_at
     FROM auth.users
@@ -204,14 +118,35 @@ BEGIN
         RAISE EXCEPTION 'Target user "%" not found in auth.users.', p_auth_user_id;
     END IF;
 
+    -- 2. Strictly verify supplied email matches registered email in auth.users
     IF LOWER(TRIM(v_target_email)) <> LOWER(TRIM(p_email)) THEN
-        RAISE EXCEPTION 'Target user email "%" does not match supplied email "%".', v_target_email, p_email;
+        RAISE EXCEPTION 'Email mismatch: Target user email "%" does not match supplied email "%".', v_target_email, p_email;
     END IF;
 
+    -- 3. Strictly require confirmed email
     IF v_confirmed_at IS NULL THEN
         RAISE EXCEPTION 'Email "%" must be confirmed in Supabase Auth before provisioning as Administrator.', v_target_email;
     END IF;
 
+    -- 4. Prevent cross-identity jumping / reassignment
+    IF EXISTS (
+        SELECT 1 FROM public.user_profiles
+        WHERE auth_user_id = p_auth_user_id
+          AND LOWER(email) <> LOWER(TRIM(p_email))
+    ) THEN
+        RAISE EXCEPTION 'Security violation: The target Supabase Auth user is already bound to another staff profile.';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM public.user_profiles
+        WHERE LOWER(email) = LOWER(TRIM(p_email))
+          AND auth_user_id IS NOT NULL
+          AND auth_user_id <> p_auth_user_id
+    ) THEN
+        RAISE EXCEPTION 'Security violation: The staff profile "%" is already bound to a different Supabase Auth user.', p_email;
+    END IF;
+
+    -- 5. Bind or update profile as active Administrator
     INSERT INTO public.user_profiles (email, full_name, role_id, is_active, auth_user_id, updated_at)
     VALUES (LOWER(TRIM(p_email)), 'Administrator', 'admin', TRUE, p_auth_user_id, NOW())
     ON CONFLICT (email) DO UPDATE
@@ -231,6 +166,7 @@ BEGIN
 END;
 $$;
 
+-- Restrict manual provisioning exclusively to database superusers and service role; never accessible to anon or authenticated
 REVOKE ALL ON FUNCTION public.manual_provision_admin(TEXT, UUID) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.manual_provision_admin(TEXT, UUID) TO postgres, service_role;
 
@@ -389,8 +325,6 @@ DECLARE
     v_invite public.staff_invitations%ROWTYPE;
     v_code_hash TEXT;
     v_bound_profile public.user_profiles%ROWTYPE;
-    v_has_active_admin BOOLEAN := FALSE;
-    v_configured_secret TEXT;
     v_rows_updated INT := 0;
 BEGIN
     -- 1. Strictly require an authenticated Supabase Auth user
@@ -453,39 +387,7 @@ BEGIN
         );
     END IF;
 
-    -- 5. First-Administrator Bootstrap Fallback:
-    -- If no active administrator currently exists in the system, allow one-time bootstrapping
-    -- using the database parameter configured outside the repository.
-    SELECT EXISTS (
-        SELECT 1 FROM public.user_profiles
-        WHERE role_id = 'admin'
-          AND auth_user_id IS NOT NULL
-          AND is_active = TRUE
-    ) INTO v_has_active_admin;
-
-    IF NOT v_has_active_admin THEN
-        v_configured_secret := NULLIF(TRIM(current_setting('app.settings.admin_bootstrap_secret', true)), '');
-        IF v_configured_secret IS NOT NULL AND p_provisioning_code IS NOT NULL AND TRIM(p_provisioning_code) = v_configured_secret THEN
-            INSERT INTO public.user_profiles (email, full_name, role_id, is_active, auth_user_id, updated_at)
-            VALUES (LOWER(v_email), 'Administrator', 'admin', TRUE, v_uid, NOW())
-            ON CONFLICT (email) DO UPDATE
-            SET auth_user_id = v_uid,
-                role_id = 'admin',
-                is_active = TRUE,
-                updated_at = NOW()
-            RETURNING * INTO v_bound_profile;
-
-            RETURN jsonb_build_object(
-                'success', true,
-                'message', 'First administrator successfully bootstrapped.',
-                'profile_id', v_bound_profile.id,
-                'role_id', 'admin',
-                'email', v_bound_profile.email
-            );
-        END IF;
-    END IF;
-
-    -- 6. Atomic Staff Invitation Claiming:
+    -- 5. Atomic Staff Invitation Claiming:
     IF p_provisioning_code IS NULL OR TRIM(p_provisioning_code) = '' THEN
         RAISE EXCEPTION 'Access denied: A valid staff provisioning code is required to claim this profile.';
     END IF;

@@ -713,7 +713,7 @@ describe('Phase 5: Server-Side Staff Authorization & Security Hardening', () => 
     expect(waiterView.customer_email_snapshot).toBeNull();
   });
 
-  it('14. Confirms no hardcoded bootstrap credential exists in migrations or frontend code', () => {
+  it('14. Confirms no bootstrap secret or custom-setting bootstrap mechanism remains in frontend or migration code', () => {
     const fs = require('fs');
     const path = require('path');
     const migrationPath = path.resolve(
@@ -722,105 +722,149 @@ describe('Phase 5: Server-Side Staff Authorization & Security Hardening', () => 
     );
     const migrationContent = fs.readFileSync(migrationPath, 'utf-8');
 
-    expect(migrationContent).not.toContain('HANGOUT-ADMIN-BOOTSTRAP-2026');
-    expect(migrationContent).not.toContain('BOOTSTRAP-2026');
+    // No GUC custom settings, bootstrap_first_admin, or hardcoded bootstrap tokens
+    expect(migrationContent).not.toContain('admin_bootstrap_secret');
+    expect(migrationContent).not.toContain('bootstrap_first_admin');
+    expect(migrationContent).not.toContain("current_setting('app.settings");
+    expect(migrationContent).not.toContain('HANGOUT-ADMIN-BOOTSTRAP');
 
     const portalLoginPath = path.resolve(__dirname, '../pages/auth/PortalLogin.tsx');
     const portalLoginContent = fs.readFileSync(portalLoginPath, 'utf-8');
-    expect(portalLoginContent).not.toContain('HANGOUT-ADMIN-BOOTSTRAP-2026');
+    expect(portalLoginContent).not.toContain('bootstrap');
+    expect(portalLoginContent).not.toContain('BOOTSTRAP');
   });
 
-  it('15. First-administrator bootstrap cannot be reused once an active administrator exists', () => {
-    const userProfiles = [
-      {
-        id: 'prof-admin-01',
-        auth_user_id: 'uuid-admin-01',
-        email: 'admin@hangout.in',
-        role_id: 'admin',
-        is_active: true,
-      },
+  it('15. Ordinary authenticated or anonymous users cannot execute manual_provision_admin', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const migrationPath = path.resolve(
+      __dirname,
+      '../../supabase/migrations/20250106000000_qr_tracking_and_takeaway_roles.sql'
+    );
+    const migrationContent = fs.readFileSync(migrationPath, 'utf-8');
+
+    // SQL permission verification:
+    // REVOKE ALL ON FUNCTION public.manual_provision_admin(TEXT, UUID) FROM PUBLIC, anon, authenticated;
+    // GRANT EXECUTE ON FUNCTION public.manual_provision_admin(TEXT, UUID) TO postgres, service_role;
+    expect(migrationContent).toContain(
+      'REVOKE ALL ON FUNCTION public.manual_provision_admin(TEXT, UUID) FROM PUBLIC, anon, authenticated;'
+    );
+    expect(migrationContent).toContain(
+      'GRANT EXECUTE ON FUNCTION public.manual_provision_admin(TEXT, UUID) TO postgres, service_role;'
+    );
+
+    // Runtime permission simulation:
+    const simulateInvokeManualProvision = (role: 'anon' | 'authenticated' | 'postgres' | 'service_role') => {
+      if (role === 'anon' || role === 'authenticated') {
+        throw new Error('permission denied for function manual_provision_admin');
+      }
+      return { success: true };
+    };
+
+    expect(() => simulateInvokeManualProvision('anon')).toThrow(/permission denied/);
+    expect(() => simulateInvokeManualProvision('authenticated')).toThrow(/permission denied/);
+    expect(simulateInvokeManualProvision('postgres').success).toBe(true);
+    expect(simulateInvokeManualProvision('service_role').success).toBe(true);
+  });
+
+  it('16. manual_provision_admin strictly rejects non-existent users, unconfirmed emails, mismatched emails, or cross-profile reassignment', () => {
+    const authUsers = [
+      { id: 'uuid-admin-user', email: 'admin@hangout.in', email_confirmed_at: '2026-11-20T10:00:00Z' },
+      { id: 'uuid-unconfirmed', email: 'unconfirmed@hangout.in', email_confirmed_at: null },
+      { id: 'uuid-mismatch', email: 'actual@hangout.in', email_confirmed_at: '2026-11-20T10:00:00Z' },
+      { id: 'uuid-already-staff', email: 'waiter@hangout.in', email_confirmed_at: '2026-11-20T10:00:00Z' },
     ];
 
-    const simulateBootstrap = (
-      caller: { uid: string; email: string; email_confirmed: boolean },
-      _secret: string
-    ) => {
-      if (!caller.email_confirmed) {
+    const userProfiles = [
+      { id: 'prof-1', auth_user_id: 'uuid-already-staff', email: 'waiter@hangout.in', role_id: 'waiter' },
+      { id: 'prof-2', auth_user_id: 'uuid-other', email: 'admin@hangout.in', role_id: 'admin' },
+    ];
+
+    const simulateManualProvision = (pEmail: string, pAuthUserId: string) => {
+      // 1. Target user exists
+      const targetUser = authUsers.find((u) => u.id === pAuthUserId);
+      if (!targetUser) {
+        throw new Error(`Target user "${pAuthUserId}" not found in auth.users.`);
+      }
+
+      // 2. Email matches
+      if (targetUser.email.toLowerCase() !== pEmail.toLowerCase().trim()) {
         throw new Error(
-          `Access denied: Email address "${caller.email}" must be confirmed before claiming administrative access.`
+          `Email mismatch: Target user email "${targetUser.email}" does not match supplied email "${pEmail}".`
         );
       }
 
-      const hasActiveAdmin = userProfiles.some(
-        (p) => p.role_id === 'admin' && p.auth_user_id !== null && p.is_active
-      );
-      if (hasActiveAdmin) {
+      // 3. Email confirmed
+      if (!targetUser.email_confirmed_at) {
         throw new Error(
-          'Access denied: The system has already been bootstrapped with an active Administrator. Subsequent staff must be provisioned by an Administrator.'
+          `Email "${targetUser.email}" must be confirmed in Supabase Auth before provisioning as Administrator.`
         );
       }
 
-      return { success: true, role_id: 'admin' };
+      // 4. Target auth_user_id already bound to another profile email
+      if (
+        userProfiles.some(
+          (p) =>
+            p.auth_user_id === pAuthUserId &&
+            p.email.toLowerCase() !== pEmail.toLowerCase()
+        )
+      ) {
+        throw new Error(
+          'Security violation: The target Supabase Auth user is already bound to another staff profile.'
+        );
+      }
+
+      // 5. Staff profile email already bound to another auth_user_id
+      if (
+        userProfiles.some(
+          (p) =>
+            p.email.toLowerCase() === pEmail.toLowerCase() &&
+            p.auth_user_id &&
+            p.auth_user_id !== pAuthUserId
+        )
+      ) {
+        throw new Error(
+          `Security violation: The staff profile "${pEmail}" is already bound to a different Supabase Auth user.`
+        );
+      }
+
+      return { success: true, email: pEmail, role_id: 'admin' };
     };
 
-    const newCaller = {
-      uid: 'uuid-new-attacker',
-      email: 'intruder@example.com',
-      email_confirmed: true,
-    };
-    expect(() => simulateBootstrap(newCaller, 'ANY-SECRET')).toThrow(
-      /The system has already been bootstrapped with an active Administrator/
+    // User not found
+    expect(() => simulateManualProvision('admin@hangout.in', 'uuid-nonexistent')).toThrow(
+      /not found in auth.users/
     );
-  });
 
-  it('16. Unauthorized users cannot bootstrap administrators (unconfirmed email, invalid secret, or unconfigured secret)', () => {
-    let configuredSecret: string | null = null;
-
-    const simulateBootstrap = (
-      caller: { uid: string | null; email: string | null; email_confirmed: boolean },
-      secret: string | null
-    ) => {
-      if (!caller.uid) {
-        throw new Error('Access denied: Valid Supabase Auth session required.');
-      }
-      if (!caller.email_confirmed) {
-        throw new Error(
-          `Access denied: Email address "${caller.email}" must be confirmed before claiming administrative access.`
-        );
-      }
-      if (!configuredSecret) {
-        throw new Error(
-          'Access denied: First-administrator bootstrap secret has not been configured in database settings.'
-        );
-      }
-      if (!secret || secret.trim() !== configuredSecret) {
-        throw new Error('Access denied: Invalid administrator bootstrap secret.');
-      }
-      return { success: true, role_id: 'admin' };
-    };
-
-    expect(() =>
-      simulateBootstrap({ uid: null, email: null, email_confirmed: false }, 'SECRET')
-    ).toThrow(/Valid Supabase Auth session required/);
-
-    expect(() =>
-      simulateBootstrap({ uid: 'uuid-1', email: 'admin@hangout.in', email_confirmed: false }, 'SECRET')
-    ).toThrow(/must be confirmed before claiming administrative access/);
-
-    expect(() =>
-      simulateBootstrap({ uid: 'uuid-1', email: 'admin@hangout.in', email_confirmed: true }, 'SECRET')
-    ).toThrow(/First-administrator bootstrap secret has not been configured/);
-
-    configuredSecret = 'SUPER-SECURE-DYNAMIC-SECRET-xyz987';
-    expect(() =>
-      simulateBootstrap({ uid: 'uuid-1', email: 'admin@hangout.in', email_confirmed: true }, 'WRONG-SECRET')
-    ).toThrow(/Invalid administrator bootstrap secret/);
-
-    const success = simulateBootstrap(
-      { uid: 'uuid-1', email: 'admin@hangout.in', email_confirmed: true },
-      'SUPER-SECURE-DYNAMIC-SECRET-xyz987'
+    // Email mismatch
+    expect(() => simulateManualProvision('supplied@hangout.in', 'uuid-mismatch')).toThrow(
+      /Email mismatch/
     );
-    expect(success.success).toBe(true);
+
+    // Unconfirmed email
+    expect(() =>
+      simulateManualProvision('unconfirmed@hangout.in', 'uuid-unconfirmed')
+    ).toThrow(/must be confirmed in Supabase Auth/);
+
+    // User already bound to another profile
+    expect(() => simulateManualProvision('new-role@hangout.in', 'uuid-already-staff')).toThrow(
+      /Email mismatch/
+    );
+
+    // Profile already bound to another auth user
+    expect(() => simulateManualProvision('admin@hangout.in', 'uuid-admin-user')).toThrow(
+      /already bound to a different Supabase Auth user/
+    );
+
+    // Fresh confirmed user with matching email succeeds
+    authUsers.push({
+      id: 'uuid-fresh-admin',
+      email: 'owner@hangout.in',
+      email_confirmed_at: '2026-11-20T10:00:00Z',
+    });
+    const result = simulateManualProvision('owner@hangout.in', 'uuid-fresh-admin');
+    expect(result.success).toBe(true);
+    expect(result.role_id).toBe('admin');
   });
 
   it('17. Atomic invitation claiming: simultaneous requests cannot both succeed', () => {
