@@ -220,11 +220,30 @@ export const HomePage: React.FC<HomePageProps> = ({
                 <Button
                   variant="outline"
                   size="lg"
+                  onClick={() => navigate('/my-orders')}
+                  leftIcon={<Clock className="w-4 h-4 text-brand-black" />}
+                >
+                  Track Order
+                </Button>
+                <Button
+                  variant="outline"
+                  size="lg"
                   onClick={onOpenTableSelector}
                   leftIcon={<QrCode className="w-4 h-4" />}
                 >
                   Table QR Demo
                 </Button>
+              </div>
+
+              {/* Quick Tracking Helper Callout */}
+              <div className="pt-1">
+                <Link
+                  to="/my-orders"
+                  className="inline-flex items-center gap-2 text-xs font-heading font-bold text-brand-muted hover:text-brand-black transition-colors p-2 rounded-xl hover:bg-brand-soft-yellow/50"
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span>Looking for an active order? Click here to view live kitchen progress & digital bill &rarr;</span>
+                </Link>
               </div>
             </div>
 

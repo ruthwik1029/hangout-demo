@@ -61,11 +61,26 @@ export const OrderConfirmationPage: React.FC = () => {
 
   const isPaid = order.payment_status === 'PAID';
 
+  const resolvedToken =
+    order?.guest_access_token ||
+    (typeof localStorage !== 'undefined' && order
+      ? localStorage.getItem(`hangout_guest_token_${order.id}`) ||
+        localStorage.getItem(`hangout_guest_token_${order.order_number}`) ||
+        ''
+      : '') ||
+    '';
+
+  const trackPath = order
+    ? `/track/${order.id}${resolvedToken ? `?token=${encodeURIComponent(resolvedToken)}` : ''}`
+    : '/menu';
+
   const handleWhatsAppShare = () => {
+    if (!order) return;
     const cafePhone = '919876543210';
     const itemsText = (order.items || [])
       .map((it) => `• ${it.quantity}x ${it.item_name_snapshot} (₹${(it.total_price || (it.unit_price_snapshot || 0) * it.quantity).toFixed(2)})`)
       .join('\n');
+    const fullTrackingUrl = `${window.location.origin}${trackPath}`;
     const message = `*HANGOUT Cafe Order Confirmation*\n` +
       `*Order #:* ${order.order_number}\n` +
       `*Mode:* ${order.order_type === 'DINING' ? `Dine-In (Table ${order.table_number_snapshot || 'Assigned'})` : `Takeaway (${order.pickup_slot_snapshot || 'Counter Collection'})`}\n` +
@@ -73,7 +88,7 @@ export const OrderConfirmationPage: React.FC = () => {
       `*Items:*\n${itemsText}\n\n` +
       `*Total:* ₹${order.total_amount.toFixed(2)}\n` +
       `*Status:* ${order.order_status} | ${order.payment_status}\n\n` +
-      `Track Order: ${window.location.origin}/track/${order.id}`;
+      `Track Order Live: ${fullTrackingUrl}`;
     window.open(`https://wa.me/${cafePhone}?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
   };
 
@@ -252,7 +267,7 @@ export const OrderConfirmationPage: React.FC = () => {
             variant="primary"
             size="lg"
             className="w-full sm:flex-1"
-            onClick={() => navigate(`/track/${order.id}`)}
+            onClick={() => navigate(trackPath)}
             rightIcon={<ChevronRight className="w-4 h-4" />}
           >
             Track Order Live

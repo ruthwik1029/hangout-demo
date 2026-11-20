@@ -41,10 +41,22 @@ export const DigitalReceipt: React.FC<DigitalReceiptProps> = ({
     }
   }, [cafeSettings]);
 
-  // Derive tracking URL
-  const trackingOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://hangout.restaurant';
-  const trackingUrl = `${trackingOrigin}/track/${order.id}${
-    order.guest_access_token ? `?token=${order.guest_access_token}` : ''
+  // Derive tracking URL with robust token resolution (order field -> localStorage cache)
+  const appBaseUrl =
+    import.meta.env.VITE_PUBLIC_APP_URL ||
+    (typeof window !== 'undefined' ? window.location.origin : 'https://hangout.restaurant');
+
+  const resolvedToken =
+    order.guest_access_token ||
+    (typeof localStorage !== 'undefined'
+      ? localStorage.getItem(`hangout_guest_token_${order.id}`) ||
+        localStorage.getItem(`hangout_guest_token_${order.order_number}`) ||
+        ''
+      : '') ||
+    '';
+
+  const trackingUrl = `${appBaseUrl}/track/${order.id}${
+    resolvedToken ? `?token=${encodeURIComponent(resolvedToken)}` : ''
   }`;
 
   useEffect(() => {

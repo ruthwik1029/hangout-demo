@@ -13,12 +13,17 @@ export const PortalLogin: React.FC = () => {
   const handleSelectRole = (role: UserRole) => {
     loginAsRole(role);
     // If coming from a protected route, go back there
-    const state = location.state as { from?: { pathname: string } };
+    const state = location.state as { from?: { pathname: string; search?: string } };
     if (state?.from?.pathname) {
-      navigate(state.from.pathname);
+      navigate(`${state.from.pathname}${state.from.search || ''}`);
     } else {
-      if (role === 'admin' || role === 'manager') navigate('/admin');
-      else navigate('/staff');
+      if (role === 'admin' || role === 'manager') {
+        navigate('/admin');
+      } else if (role === 'cashier') {
+        navigate('/staff?tab=takeaway');
+      } else {
+        navigate('/staff?tab=tables');
+      }
     }
   };
 

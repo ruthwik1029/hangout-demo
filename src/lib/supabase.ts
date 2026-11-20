@@ -1443,7 +1443,11 @@ export async function fetchOrderById(idOrNumber: string, guestAccessToken?: stri
   if (isSupabaseConfigured()) {
     let token = guestAccessToken || null;
     if (!token && typeof localStorage !== 'undefined') {
-      token = localStorage.getItem(`hangout_guest_token_${idOrNumber}`) || null;
+      token =
+        localStorage.getItem(`hangout_guest_token_${idOrNumber}`) ||
+        localStorage.getItem(`hangout_guest_token_${idOrNumber.toLowerCase()}`) ||
+        localStorage.getItem(`hangout_guest_token_${idOrNumber.toUpperCase()}`) ||
+        null;
     }
 
     if (token) {
@@ -1455,10 +1459,21 @@ export async function fetchOrderById(idOrNumber: string, guestAccessToken?: stri
 
         if (!error && res && res.order) {
           const ord = res.order;
-          return {
+          const fullOrder = {
             ...ord,
+            status: (ord.status || ord.order_status) as OrderStatus,
+            order_status: (ord.order_status || ord.status) as OrderStatus,
+            guest_access_token: ord.guest_access_token || token,
             items: res.items || [],
           } as Order;
+
+          // Cache in local storage for continuous access
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(`hangout_guest_token_${fullOrder.id}`, token);
+            localStorage.setItem(`hangout_guest_token_${fullOrder.order_number}`, token);
+          }
+
+          return fullOrder;
         }
       } catch {
         // Fall back to local store
@@ -1474,6 +1489,53 @@ export async function fetchOrderById(idOrNumber: string, guestAccessToken?: stri
         o.order_number.toLowerCase() === idOrNumber.toLowerCase()
     ) || null
   );
+}
+
+export async function lookupGuestOrder(
+  idOrNumber: string,
+  mobileOrToken: string
+): Promise<Order | null> {
+  if (!idOrNumber || !mobileOrToken) return null;
+
+  if (isSupabaseConfigured()) {
+    try {
+      const { data: rpcRes, error } = await supabase.rpc('lookup_guest_order', {
+        p_order_number: idOrNumber,
+        p_mobile_or_token: mobileOrToken,
+      });
+
+      if (!error && rpcRes && rpcRes.success && rpcRes.order_id) {
+        const order = await fetchOrderById(rpcRes.order_id, rpcRes.guest_access_token);
+        if (order) {
+          if (typeof localStorage !== 'undefined' && rpcRes.guest_access_token) {
+            localStorage.setItem(`hangout_guest_token_${order.id}`, rpcRes.guest_access_token);
+            localStorage.setItem(`hangout_guest_token_${order.order_number}`, rpcRes.guest_access_token);
+          }
+          return order;
+        }
+      }
+    } catch {
+      // Fall through to local fallback
+    }
+  }
+
+  const clean = mobileOrToken.replace(/\D/g, '').slice(-10);
+  const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  const found = orders.find(
+    (o) =>
+      (o.id === idOrNumber || o.order_number.toLowerCase() === idOrNumber.toLowerCase()) &&
+      (o.guest_access_token === mobileOrToken ||
+        (clean && o.customer_mobile_snapshot && o.customer_mobile_snapshot.replace(/\D/g, '').endsWith(clean)))
+  );
+
+  if (found && typeof localStorage !== 'undefined') {
+    if (found.guest_access_token) {
+      localStorage.setItem(`hangout_guest_token_${found.id}`, found.guest_access_token);
+      localStorage.setItem(`hangout_guest_token_${found.order_number}`, found.guest_access_token);
+    }
+  }
+
+  return found || null;
 }
 
 export async function fetchCustomerOrders(
@@ -1513,13 +1575,25 @@ export async function updateOrderStatus(
   actorName: string = 'Staff'
 ): Promise<Order & { success: boolean; order: Order }> {
   const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
-  const idx = orders.findIndex((o) => o.id === orderId);
+  let idx = orders.findIndex((o) => o.id === orderId);
 
+  let currentOrder: Order;
   if (idx === -1) {
-    throw new Error('Order not found');
+    if (isSupabaseConfigured()) {
+      const fetched = await fetchOrderById(orderId);
+      if (fetched) {
+        orders.push(fetched);
+        idx = orders.length - 1;
+        currentOrder = fetched;
+      } else {
+        throw new Error('Order not found');
+      }
+    } else {
+      throw new Error('Order not found');
+    }
+  } else {
+    currentOrder = orders[idx];
   }
-
-  const currentOrder = orders[idx];
   const isStatusChanging = newStatus !== currentOrder.order_status;
 
   if (isStatusChanging) {

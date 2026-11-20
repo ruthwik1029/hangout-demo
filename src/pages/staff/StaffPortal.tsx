@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
 import { StaffNav } from '../../components/staff/StaffNav';
@@ -9,6 +10,7 @@ import { RejectionReasonModal } from '../../components/staff/RejectionReasonModa
 import { WaiterOrderModal } from '../../components/staff/WaiterOrderModal';
 import { BillSplittingModal } from '../../components/staff/BillSplittingModal';
 import { CashierReceiptModal } from '../../components/staff/CashierReceiptModal';
+import { TakeawayBoard } from '../../components/staff/TakeawayBoard';
 import { Button } from '../../components/common/Button';
 import {
   fetchCafeTables,
@@ -35,8 +37,22 @@ import {
 export const StaffPortal: React.FC = () => {
   const { currentUser, availableDemoUsers } = useAuth();
   const { showToast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [activeTab, setActiveTab] = useState<'tables' | 'approvals' | 'active_orders' | 'billing'>('tables');
+  const tabParam = searchParams.get('tab') as 'tables' | 'approvals' | 'active_orders' | 'billing' | 'takeaway' | null;
+
+  const [activeTab, setActiveTab] = useState<'tables' | 'approvals' | 'active_orders' | 'billing' | 'takeaway'>(() => {
+    if (tabParam && ['tables', 'approvals', 'active_orders', 'billing', 'takeaway'].includes(tabParam)) {
+      return tabParam;
+    }
+    if (currentUser?.role_id === 'cashier') return 'takeaway';
+    return 'tables';
+  });
+
+  const handleTabChange = (tab: 'tables' | 'approvals' | 'active_orders' | 'billing' | 'takeaway') => {
+    setActiveTab(tab);
+    setSearchParams({ tab });
+  };
   const [tables, setTables] = useState<CafeTable[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -234,9 +250,10 @@ export const StaffPortal: React.FC = () => {
       {/* Top Header & Navigation */}
       <StaffNav
         activeTab={activeTab}
-        onTabChange={setActiveTab}
+        onTabChange={handleTabChange}
         pendingApprovalsCount={pendingDiningApprovals.length}
         activeOrdersCount={activeDiningOrders.length}
+        takeawayCount={orders.filter((o) => o.order_type === 'TAKEAWAY' && ['PENDING', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP'].includes(o.status || o.order_status)).length}
       />
 
       {/* KPI Overview Cards */}
@@ -608,6 +625,11 @@ export const StaffPortal: React.FC = () => {
               ))}
           </div>
         </div>
+      )}
+
+      {/* Tab: Takeaway Operations Counter */}
+      {activeTab === 'takeaway' && (
+        <TakeawayBoard orders={orders} onRefresh={loadData} />
       )}
 
       {/* Drawer: Table Detail Management */}

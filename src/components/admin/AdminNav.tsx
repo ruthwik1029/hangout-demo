@@ -30,6 +30,8 @@ export const AdminNav: React.FC<AdminNavProps> = ({ title, subtitle }) => {
   const { currentUser, logout } = useAuth();
   const navigate = useNavigate();
 
+  const isSuperAdmin = currentUser?.role_id === 'admin';
+
   const navLinks = [
     { to: '/admin', label: 'Overview', icon: LayoutDashboard, end: true },
     { to: '/admin/analytics', label: 'Analytics', icon: BarChart3 },
@@ -40,8 +42,12 @@ export const AdminNav: React.FC<AdminNavProps> = ({ title, subtitle }) => {
     { to: '/admin/qr', label: 'Tables & QR', icon: QrCode },
     { to: '/admin/customers', label: 'Customers', icon: Users },
     { to: '/admin/staff', label: 'Staff & Roles', icon: UserCheck },
-    { to: '/admin/billing', label: 'Billing & Tax', icon: Receipt },
-    { to: '/admin/settings', label: 'Operations', icon: Settings },
+    ...(isSuperAdmin
+      ? [
+          { to: '/admin/billing', label: 'Billing & Tax', icon: Receipt },
+          { to: '/admin/settings', label: 'Operations', icon: Settings },
+        ]
+      : []),
     { to: '/admin/activity', label: 'Activity History', icon: History },
   ];
 

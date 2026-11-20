@@ -75,6 +75,16 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenTableSelector, onOpenProfi
             >
               Menu
             </Link>
+            <Link
+              to="/my-orders"
+              className={`px-3.5 py-2 rounded-xl transition-colors ${
+                isActive('/my-orders')
+                  ? 'bg-brand-black text-brand-yellow'
+                  : 'text-brand-charcoal hover:bg-brand-black/5 hover:text-brand-black'
+              }`}
+            >
+              Track Order
+            </Link>
             <a
               href="/#specials"
               className="px-3.5 py-2 rounded-xl text-brand-charcoal hover:bg-brand-black/5 hover:text-brand-black transition-colors"
@@ -246,6 +256,14 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenTableSelector, onOpenProfi
               className="p-2.5 rounded-xl text-brand-black hover:bg-brand-warm-white"
             >
               Menu
+            </Link>
+            <Link
+              to="/my-orders"
+              onClick={() => setMobileMenuOpen(false)}
+              className="p-2.5 rounded-xl text-brand-black hover:bg-brand-warm-white flex items-center justify-between"
+            >
+              <span>Track Order / My Orders</span>
+              <span className="px-2 py-0.5 rounded text-[9px] font-extrabold uppercase bg-brand-yellow text-brand-black">Live</span>
             </Link>
             <a
               href="/#specials"

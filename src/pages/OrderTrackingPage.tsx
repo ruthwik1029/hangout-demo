@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
-import { fetchOrderById, fetchMenuItems } from '../lib/supabase';
+import { fetchOrderById, fetchMenuItems, lookupGuestOrder } from '../lib/supabase';
 import { Order, OrderStatus, MenuItem } from '../types';
 import { useCart } from '../context/CartContext';
 import { useToast } from '../context/ToastContext';
@@ -15,6 +15,8 @@ import {
   AlertCircle,
   MessageCircle,
   Printer,
+  Search,
+  KeyRound,
 } from 'lucide-react';
 
 interface TrackingStep {
@@ -53,14 +55,47 @@ export const OrderTrackingPage: React.FC = () => {
   const [isReordering, setIsReordering] = useState(false);
   const [isThermalPrinterOpen, setIsThermalPrinterOpen] = useState(false);
 
+  const [recoveryInput, setRecoveryInput] = useState('');
+  const [isRecovering, setIsRecovering] = useState(false);
+
   useEffect(() => {
     if (!orderId) return;
 
-    fetchOrderById(orderId, tokenParam).then((res) => {
-      setOrder(res);
-      setLoading(false);
-    });
+    if (tokenParam && typeof localStorage !== 'undefined') {
+      localStorage.setItem(`hangout_guest_token_${orderId}`, tokenParam);
+    }
 
+    const loadOrder = async () => {
+      const res = await fetchOrderById(orderId, tokenParam);
+      if (res) {
+        setOrder(res);
+        if (typeof localStorage !== 'undefined') {
+          const effectiveToken = tokenParam || res.guest_access_token;
+          if (effectiveToken) {
+            localStorage.setItem(`hangout_guest_token_${res.id}`, effectiveToken);
+            localStorage.setItem(`hangout_guest_token_${res.order_number}`, effectiveToken);
+          }
+          try {
+            const raw = localStorage.getItem('hangout_guest_recent_orders');
+            const recent = raw ? JSON.parse(raw) : [];
+            const filtered = recent.filter((r: { id: string }) => r.id !== res.id);
+            filtered.unshift({
+              id: res.id,
+              order_number: res.order_number,
+              status: res.status,
+              total_amount: res.total_amount,
+              order_type: res.order_type,
+              created_at: res.created_at,
+              token: effectiveToken || '',
+            });
+            localStorage.setItem('hangout_guest_recent_orders', JSON.stringify(filtered.slice(0, 10)));
+          } catch {}
+        }
+      }
+      setLoading(false);
+    };
+
+    loadOrder();
     fetchMenuItems().then(setMenuItems);
 
     // Auto-refresh order status periodically (simulates live realtime updates)
@@ -73,13 +108,43 @@ export const OrderTrackingPage: React.FC = () => {
     return () => clearInterval(interval);
   }, [orderId, tokenParam]);
 
+  const handleManualRecovery = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!orderId || !recoveryInput.trim()) return;
+    setIsRecovering(true);
+    try {
+      const recovered = await lookupGuestOrder(orderId, recoveryInput.trim());
+      if (recovered) {
+        setOrder(recovered);
+        showToast({
+          type: 'success',
+          title: 'Order Verified',
+          message: `Order #${recovered.order_number} loaded successfully.`,
+        });
+      } else {
+        showToast({
+          type: 'error',
+          title: 'Lookup Failed',
+          message: 'Could not verify order with the mobile number or token provided.',
+        });
+      }
+    } catch {
+      showToast({
+        type: 'error',
+        title: 'Error',
+        message: 'Order lookup request failed.',
+      });
+    } finally {
+      setIsRecovering(false);
+    }
+  };
+
   const handleReorder = async () => {
     if (!order || !order.items) return;
     setIsReordering(true);
 
     let addedCount = 0;
     for (const item of order.items) {
-      // Find matching active menu item
       const matched = menuItems.find((m) => m.id === item.menu_item_id);
       if (matched && matched.is_available) {
         addItem(matched, item.quantity);
@@ -118,14 +183,53 @@ export const OrderTrackingPage: React.FC = () => {
 
   if (!order) {
     return (
-      <div className="max-w-md mx-auto px-4 py-20 text-center space-y-4">
-        <h2 className="font-heading font-extrabold text-2xl text-brand-black">Order Not Found</h2>
-        <p className="text-xs text-brand-muted">The requested order could not be located.</p>
-        <Link to="/menu">
-          <Button variant="primary" size="md">
-            Go to Menu
+      <div className="max-w-md mx-auto px-4 py-16 text-center space-y-6">
+        <div className="w-16 h-16 rounded-3xl bg-brand-soft-yellow text-brand-black flex items-center justify-center mx-auto shadow-sm">
+          <KeyRound className="w-8 h-8" />
+        </div>
+        <div className="space-y-2">
+          <h2 className="font-heading font-extrabold text-2xl text-brand-black">Order Verification Needed</h2>
+          <p className="text-xs text-brand-muted max-w-sm mx-auto">
+            Order <strong className="text-brand-black font-mono">{orderId}</strong> requires verification to view tracking details. Enter the mobile number used when ordering or your guest access token.
+          </p>
+        </div>
+
+        <form onSubmit={handleManualRecovery} className="space-y-3 bg-white p-5 rounded-2xl border border-brand-border text-left shadow-card-subtle">
+          <label className="block text-[11px] font-bold uppercase text-brand-muted tracking-wider">
+            Mobile Number or Access Token
+          </label>
+          <input
+            type="text"
+            value={recoveryInput}
+            onChange={(e) => setRecoveryInput(e.target.value)}
+            placeholder="e.g. 9876543210 or paste token"
+            className="w-full px-3.5 py-2.5 rounded-xl border border-brand-border text-xs focus:ring-2 focus:ring-brand-yellow focus:outline-none"
+            required
+          />
+          <Button
+            type="submit"
+            variant="primary"
+            size="md"
+            className="w-full"
+            isLoading={isRecovering}
+            leftIcon={<Search className="w-4 h-4" />}
+          >
+            Verify & Track Order
           </Button>
-        </Link>
+        </form>
+
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-2 pt-2">
+          <Link to="/my-orders">
+            <Button variant="outline" size="sm">
+              Go to My Orders
+            </Button>
+          </Link>
+          <Link to="/menu">
+            <Button variant="ghost" size="sm">
+              Explore Menu
+            </Button>
+          </Link>
+        </div>
       </div>
     );
   }
@@ -152,7 +256,7 @@ export const OrderTrackingPage: React.FC = () => {
       {/* Top Bar */}
       <div className="flex items-center justify-between border-b border-brand-border pb-4">
         <button
-          onClick={() => navigate('/profile')}
+          onClick={() => navigate('/my-orders')}
           className="flex items-center gap-2 text-xs font-heading font-bold text-brand-muted hover:text-brand-black transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />

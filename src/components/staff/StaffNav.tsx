@@ -10,13 +10,15 @@ import {
   ExternalLink,
   LogOut,
   Coffee,
+  ShoppingBag,
 } from 'lucide-react';
 
 interface StaffNavProps {
-  activeTab: 'tables' | 'approvals' | 'active_orders' | 'billing';
-  onTabChange: (tab: 'tables' | 'approvals' | 'active_orders' | 'billing') => void;
+  activeTab: 'tables' | 'approvals' | 'active_orders' | 'billing' | 'takeaway';
+  onTabChange: (tab: 'tables' | 'approvals' | 'active_orders' | 'billing' | 'takeaway') => void;
   pendingApprovalsCount: number;
   activeOrdersCount: number;
+  takeawayCount?: number;
 }
 
 export const StaffNav: React.FC<StaffNavProps> = ({
@@ -24,6 +26,7 @@ export const StaffNav: React.FC<StaffNavProps> = ({
   onTabChange,
   pendingApprovalsCount,
   activeOrdersCount,
+  takeawayCount = 0,
 }) => {
   const { currentUser, logout, hasRole } = useAuth();
   const navigate = useNavigate();
@@ -124,6 +127,23 @@ export const StaffNav: React.FC<StaffNavProps> = ({
           {activeOrdersCount > 0 && (
             <span className="px-1.5 py-0.5 rounded-full text-[10px] font-black bg-brand-charcoal text-brand-yellow">
               {activeOrdersCount}
+            </span>
+          )}
+        </button>
+
+        <button
+          onClick={() => onTabChange('takeaway')}
+          className={`relative flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-heading font-bold transition-all whitespace-nowrap ${
+            activeTab === 'takeaway'
+              ? 'bg-brand-black text-brand-yellow shadow-sm'
+              : 'bg-white text-brand-charcoal hover:bg-brand-soft-yellow/50 border border-brand-border'
+          }`}
+        >
+          <ShoppingBag className="w-4 h-4" />
+          <span>Takeaway Counter</span>
+          {takeawayCount > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-black bg-brand-yellow text-brand-black">
+              {takeawayCount}
             </span>
           )}
         </button>

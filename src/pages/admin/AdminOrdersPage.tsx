@@ -7,6 +7,7 @@ import { Button } from '../../components/common/Button';
 import { Modal } from '../../components/common/Modal';
 import { Drawer } from '../../components/common/Drawer';
 import { CashierReceiptModal } from '../../components/staff/CashierReceiptModal';
+import { TakeawayBoard } from '../../components/staff/TakeawayBoard';
 import { useToast } from '../../context/ToastContext';
 import {
   Search,
@@ -44,6 +45,7 @@ export const AdminOrdersPage: React.FC = () => {
 
   // Status Action Loading
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [viewMode, setViewMode] = useState<'table' | 'takeaway_board'>('table');
 
   const loadOrders = useCallback(async () => {
     const data = await fetchOrders();
@@ -174,8 +176,42 @@ export const AdminOrdersPage: React.FC = () => {
         subtitle="Process incoming tickets, state transitions, kitchen queue, and payment settlement."
       />
 
-      {/* Filter Tabs & Search Bar */}
-      <div className="space-y-4">
+      {/* View Mode Switcher */}
+      <div className="flex items-center justify-between bg-white p-2 rounded-2xl border border-brand-border shadow-xs">
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setViewMode('table')}
+            className={`px-4 py-2 rounded-xl text-xs font-heading font-bold transition-all ${
+              viewMode === 'table'
+                ? 'bg-brand-black text-brand-yellow shadow-sm'
+                : 'text-brand-charcoal hover:bg-brand-warm-white'
+            }`}
+          >
+            All Orders Overview
+          </button>
+          <button
+            onClick={() => setViewMode('takeaway_board')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-heading font-bold transition-all ${
+              viewMode === 'takeaway_board'
+                ? 'bg-brand-black text-brand-yellow shadow-sm'
+                : 'text-brand-charcoal hover:bg-brand-warm-white'
+            }`}
+          >
+            <ShoppingBag className="w-3.5 h-3.5" />
+            <span>Takeaway Counter Board</span>
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-brand-yellow text-brand-black font-extrabold">
+              {orders.filter((o) => o.order_type === 'TAKEAWAY' && ['PENDING', 'ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP'].includes(o.status)).length}
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {viewMode === 'takeaway_board' ? (
+        <TakeawayBoard orders={orders} onRefresh={loadOrders} />
+      ) : (
+        <>
+          {/* Filter Tabs & Search Bar */}
+          <div className="space-y-4">
         {/* Status Tab Pills */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
           {[
@@ -375,6 +411,8 @@ export const AdminOrdersPage: React.FC = () => {
             </table>
           </div>
         </div>
+      )}
+        </>
       )}
 
       {/* Order Details Slide-Out Drawer */}

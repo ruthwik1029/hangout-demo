@@ -26,7 +26,9 @@ import { CartPage } from './pages/CartPage';
 import { CheckoutPage } from './pages/CheckoutPage';
 import { OrderConfirmationPage } from './pages/OrderConfirmationPage';
 import { OrderTrackingPage } from './pages/OrderTrackingPage';
+import { MyOrdersPage } from './pages/MyOrdersPage';
 import { ProfilePage } from './pages/ProfilePage';
+import { ActiveOrderBanner } from './components/customer/ActiveOrderBanner';
 import { PortalLogin } from './pages/auth/PortalLogin';
 import { AdminDashboard } from './pages/admin/AdminDashboard';
 import { AdminAnalyticsPage } from './pages/admin/AdminAnalyticsPage';
@@ -89,6 +91,9 @@ const AppLayout: React.FC = () => {
         onOpenProfile={() => setIsProfileModalOpen(true)}
       />
 
+      {/* Persistent Active Order Banner */}
+      <ActiveOrderBanner />
+
       {/* Route Views */}
       <main className="flex-1">
         <Routes>
@@ -124,6 +129,7 @@ const AppLayout: React.FC = () => {
           <Route path="/checkout" element={<CheckoutPage />} />
           <Route path="/order-confirmation/:orderId" element={<OrderConfirmationPage />} />
           <Route path="/track/:orderId" element={<OrderTrackingPage />} />
+          <Route path="/my-orders" element={<MyOrdersPage />} />
           <Route path="/profile" element={<ProfilePage />} />
 
           {/* Internal Portals & Auth */}
@@ -131,7 +137,7 @@ const AppLayout: React.FC = () => {
           <Route
             path="/admin"
             element={
-              <ProtectedRoute allowedRoles={['admin']}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']}>
                 <AdminDashboard />
               </ProtectedRoute>
             }
@@ -139,7 +145,7 @@ const AppLayout: React.FC = () => {
           <Route
             path="/admin/analytics"
             element={
-              <ProtectedRoute allowedRoles={['admin']}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']}>
                 <AdminAnalyticsPage />
               </ProtectedRoute>
             }
@@ -147,7 +153,7 @@ const AppLayout: React.FC = () => {
           <Route
             path="/admin/menu"
             element={
-              <ProtectedRoute allowedRoles={['admin']}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']}>
                 <AdminMenuPage />
               </ProtectedRoute>
             }
@@ -155,7 +161,7 @@ const AppLayout: React.FC = () => {
           <Route
             path="/admin/orders"
             element={
-              <ProtectedRoute allowedRoles={['admin']}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']}>
                 <AdminOrdersPage />
               </ProtectedRoute>
             }
@@ -163,7 +169,7 @@ const AppLayout: React.FC = () => {
           <Route
             path="/admin/customers"
             element={
-              <ProtectedRoute allowedRoles={['admin']}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']}>
                 <AdminCustomersPage />
               </ProtectedRoute>
             }
@@ -171,7 +177,7 @@ const AppLayout: React.FC = () => {
           <Route
             path="/admin/website"
             element={
-              <ProtectedRoute allowedRoles={['admin']}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']}>
                 <AdminWebsitePage />
               </ProtectedRoute>
             }
@@ -179,7 +185,7 @@ const AppLayout: React.FC = () => {
           <Route
             path="/admin/promotions"
             element={
-              <ProtectedRoute allowedRoles={['admin']}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']}>
                 <AdminPromotionsPage />
               </ProtectedRoute>
             }
@@ -187,7 +193,7 @@ const AppLayout: React.FC = () => {
           <Route
             path="/admin/qr"
             element={
-              <ProtectedRoute allowedRoles={['admin']}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']}>
                 <AdminQRPage />
               </ProtectedRoute>
             }
@@ -195,7 +201,7 @@ const AppLayout: React.FC = () => {
           <Route
             path="/admin/staff"
             element={
-              <ProtectedRoute allowedRoles={['admin']}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']}>
                 <AdminStaffPage />
               </ProtectedRoute>
             }
@@ -219,7 +225,7 @@ const AppLayout: React.FC = () => {
           <Route
             path="/admin/activity"
             element={
-              <ProtectedRoute allowedRoles={['admin']}>
+              <ProtectedRoute allowedRoles={['admin', 'manager']}>
                 <AdminActivityPage />
               </ProtectedRoute>
             }
