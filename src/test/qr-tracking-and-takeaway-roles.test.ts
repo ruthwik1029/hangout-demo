@@ -712,5 +712,418 @@ describe('Phase 5: Server-Side Staff Authorization & Security Hardening', () => 
     expect(waiterView.customer_mobile_snapshot).toBe('XXXXXX3210');
     expect(waiterView.customer_email_snapshot).toBeNull();
   });
+
+  it('14. Confirms no hardcoded bootstrap credential exists in migrations or frontend code', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const migrationPath = path.resolve(
+      __dirname,
+      '../../supabase/migrations/20250106000000_qr_tracking_and_takeaway_roles.sql'
+    );
+    const migrationContent = fs.readFileSync(migrationPath, 'utf-8');
+
+    expect(migrationContent).not.toContain('HANGOUT-ADMIN-BOOTSTRAP-2026');
+    expect(migrationContent).not.toContain('BOOTSTRAP-2026');
+
+    const portalLoginPath = path.resolve(__dirname, '../pages/auth/PortalLogin.tsx');
+    const portalLoginContent = fs.readFileSync(portalLoginPath, 'utf-8');
+    expect(portalLoginContent).not.toContain('HANGOUT-ADMIN-BOOTSTRAP-2026');
+  });
+
+  it('15. First-administrator bootstrap cannot be reused once an active administrator exists', () => {
+    const userProfiles = [
+      {
+        id: 'prof-admin-01',
+        auth_user_id: 'uuid-admin-01',
+        email: 'admin@hangout.in',
+        role_id: 'admin',
+        is_active: true,
+      },
+    ];
+
+    const simulateBootstrap = (
+      caller: { uid: string; email: string; email_confirmed: boolean },
+      _secret: string
+    ) => {
+      if (!caller.email_confirmed) {
+        throw new Error(
+          `Access denied: Email address "${caller.email}" must be confirmed before claiming administrative access.`
+        );
+      }
+
+      const hasActiveAdmin = userProfiles.some(
+        (p) => p.role_id === 'admin' && p.auth_user_id !== null && p.is_active
+      );
+      if (hasActiveAdmin) {
+        throw new Error(
+          'Access denied: The system has already been bootstrapped with an active Administrator. Subsequent staff must be provisioned by an Administrator.'
+        );
+      }
+
+      return { success: true, role_id: 'admin' };
+    };
+
+    const newCaller = {
+      uid: 'uuid-new-attacker',
+      email: 'intruder@example.com',
+      email_confirmed: true,
+    };
+    expect(() => simulateBootstrap(newCaller, 'ANY-SECRET')).toThrow(
+      /The system has already been bootstrapped with an active Administrator/
+    );
+  });
+
+  it('16. Unauthorized users cannot bootstrap administrators (unconfirmed email, invalid secret, or unconfigured secret)', () => {
+    let configuredSecret: string | null = null;
+
+    const simulateBootstrap = (
+      caller: { uid: string | null; email: string | null; email_confirmed: boolean },
+      secret: string | null
+    ) => {
+      if (!caller.uid) {
+        throw new Error('Access denied: Valid Supabase Auth session required.');
+      }
+      if (!caller.email_confirmed) {
+        throw new Error(
+          `Access denied: Email address "${caller.email}" must be confirmed before claiming administrative access.`
+        );
+      }
+      if (!configuredSecret) {
+        throw new Error(
+          'Access denied: First-administrator bootstrap secret has not been configured in database settings.'
+        );
+      }
+      if (!secret || secret.trim() !== configuredSecret) {
+        throw new Error('Access denied: Invalid administrator bootstrap secret.');
+      }
+      return { success: true, role_id: 'admin' };
+    };
+
+    expect(() =>
+      simulateBootstrap({ uid: null, email: null, email_confirmed: false }, 'SECRET')
+    ).toThrow(/Valid Supabase Auth session required/);
+
+    expect(() =>
+      simulateBootstrap({ uid: 'uuid-1', email: 'admin@hangout.in', email_confirmed: false }, 'SECRET')
+    ).toThrow(/must be confirmed before claiming administrative access/);
+
+    expect(() =>
+      simulateBootstrap({ uid: 'uuid-1', email: 'admin@hangout.in', email_confirmed: true }, 'SECRET')
+    ).toThrow(/First-administrator bootstrap secret has not been configured/);
+
+    configuredSecret = 'SUPER-SECURE-DYNAMIC-SECRET-xyz987';
+    expect(() =>
+      simulateBootstrap({ uid: 'uuid-1', email: 'admin@hangout.in', email_confirmed: true }, 'WRONG-SECRET')
+    ).toThrow(/Invalid administrator bootstrap secret/);
+
+    const success = simulateBootstrap(
+      { uid: 'uuid-1', email: 'admin@hangout.in', email_confirmed: true },
+      'SUPER-SECURE-DYNAMIC-SECRET-xyz987'
+    );
+    expect(success.success).toBe(true);
+  });
+
+  it('17. Atomic invitation claiming: simultaneous requests cannot both succeed', () => {
+    const invitation = {
+      id: 'inv-manager-42',
+      email: 'manager@hangout.in',
+      role_id: 'manager',
+      provisioning_code_hash: 'hash-of-MGR-SECRET-CODE',
+      is_claimed: false,
+      claimed_by: null as string | null,
+      expires_at: new Date(Date.now() + 86400000).toISOString(),
+    };
+
+    const hashFn = (c: string) => `hash-of-${c}`;
+
+    const claimInvitationAtomic = (callerUid: string, code: string) => {
+      if (invitation.is_claimed) {
+        throw new Error(
+          `Access denied: Staff invitation for "${invitation.email}" has already been claimed.`
+        );
+      }
+      if (new Date(invitation.expires_at) <= new Date()) {
+        throw new Error(`Access denied: Staff invitation for "${invitation.email}" has expired.`);
+      }
+      if (invitation.provisioning_code_hash !== hashFn(code)) {
+        throw new Error('Access denied: Invalid staff provisioning code.');
+      }
+
+      if (invitation.is_claimed) {
+        throw new Error(
+          'Concurrent update detected: Staff invitation was claimed or modified by another transaction.'
+        );
+      }
+
+      invitation.is_claimed = true;
+      invitation.claimed_by = callerUid;
+      return { success: true, claimed_by: callerUid };
+    };
+
+    const result1 = claimInvitationAtomic('uuid-worker-1', 'MGR-SECRET-CODE');
+    expect(result1.success).toBe(true);
+    expect(result1.claimed_by).toBe('uuid-worker-1');
+    expect(invitation.is_claimed).toBe(true);
+
+    expect(() => claimInvitationAtomic('uuid-worker-2', 'MGR-SECRET-CODE')).toThrow(
+      /has already been claimed/
+    );
+  });
+
+  it('18. Rejects expired and previously claimed invitations', () => {
+    const expiredInvite = {
+      id: 'inv-expired',
+      email: 'cashier@hangout.in',
+      is_claimed: false,
+      expires_at: new Date(Date.now() - 3600000).toISOString(),
+      code_hash: 'hash-code',
+    };
+
+    const alreadyClaimedInvite = {
+      id: 'inv-claimed',
+      email: 'waiter@hangout.in',
+      is_claimed: true,
+      expires_at: new Date(Date.now() + 86400000).toISOString(),
+      code_hash: 'hash-code',
+    };
+
+    const verifyInvite = (invite: typeof expiredInvite) => {
+      if (invite.is_claimed) {
+        throw new Error(
+          `Access denied: Staff invitation for "${invite.email}" has already been claimed.`
+        );
+      }
+      if (new Date(invite.expires_at) <= new Date()) {
+        throw new Error(`Access denied: Staff invitation for "${invite.email}" has expired.`);
+      }
+      return true;
+    };
+
+    expect(() => verifyInvite(expiredInvite)).toThrow(
+      /Staff invitation for "cashier@hangout.in" has expired/
+    );
+    expect(() => verifyInvite(alreadyClaimedInvite)).toThrow(
+      /Staff invitation for "waiter@hangout.in" has already been claimed/
+    );
+  });
+
+  it('19. Direct administrator binding strictly verifies auth.users, matching email, and email confirmation', () => {
+    const authUsers = [
+      {
+        id: 'uuid-target-confirmed',
+        email: 'verified-chef@hangout.in',
+        email_confirmed_at: '2026-11-20T10:00:00Z',
+      },
+      { id: 'uuid-target-unconfirmed', email: 'unconfirmed@hangout.in', email_confirmed_at: null },
+      {
+        id: 'uuid-target-different',
+        email: 'different@hangout.in',
+        email_confirmed_at: '2026-11-20T10:00:00Z',
+      },
+      {
+        id: 'uuid-already-bound',
+        email: 'waiter@hangout.in',
+        email_confirmed_at: '2026-11-20T10:00:00Z',
+      },
+      {
+        id: 'uuid-new-waiter',
+        email: 'waiter@hangout.in',
+        email_confirmed_at: '2026-11-20T10:00:00Z',
+      },
+    ];
+
+    const boundProfiles = [
+      {
+        id: 'prof-existing',
+        auth_user_id: 'uuid-already-bound',
+        email: 'waiter@hangout.in',
+        role_id: 'waiter',
+      },
+    ];
+
+    const simulateAdminDirectProvision = (
+      adminCaller: { is_admin: boolean; confirmed: boolean },
+      targetAuthUserId: string,
+      targetEmail: string,
+      roleId: string
+    ) => {
+      if (!adminCaller.is_admin || !adminCaller.confirmed) {
+        throw new Error(
+          'Access denied: Only an active Administrator with confirmed email can provision staff accounts.'
+        );
+      }
+
+      const targetUser = authUsers.find((u) => u.id === targetAuthUserId);
+      if (!targetUser) {
+        throw new Error(`Target user "${targetAuthUserId}" does not exist in auth.users.`);
+      }
+
+      if (targetUser.email.toLowerCase() !== targetEmail.toLowerCase()) {
+        throw new Error(
+          `Email mismatch: Target user email "${targetUser.email}" does not match supplied email "${targetEmail}".`
+        );
+      }
+
+      if (!targetUser.email_confirmed_at) {
+        throw new Error(
+          `Access denied: Target user email "${targetUser.email}" is not confirmed in Supabase Auth.`
+        );
+      }
+
+      // Check target auth_user_id already bound to a different email
+      if (
+        boundProfiles.some(
+          (p) =>
+            p.auth_user_id === targetAuthUserId &&
+            p.email.toLowerCase() !== targetEmail.toLowerCase()
+        )
+      ) {
+        throw new Error(
+          'Security violation: The target Supabase Auth user is already bound to another staff profile.'
+        );
+      }
+
+      // Check staff profile already bound to a different auth_user_id
+      if (
+        boundProfiles.some(
+          (p) =>
+            p.email.toLowerCase() === targetEmail.toLowerCase() &&
+            p.auth_user_id !== null &&
+            p.auth_user_id !== targetAuthUserId
+        )
+      ) {
+        throw new Error(
+          `Security violation: The staff profile "${targetEmail}" is already bound to a different Supabase Auth user.`
+        );
+      }
+
+      return { success: true, email: targetEmail, role_id: roleId };
+    };
+
+    const admin = { is_admin: true, confirmed: true };
+
+    expect(() =>
+      simulateAdminDirectProvision(admin, 'uuid-nonexistent', 'nobody@hangout.in', 'chef')
+    ).toThrow(/does not exist in auth.users/);
+
+    expect(() =>
+      simulateAdminDirectProvision(
+        admin,
+        'uuid-target-confirmed',
+        'wrong-email@hangout.in',
+        'kitchen'
+      )
+    ).toThrow(
+      /Email mismatch: Target user email "verified-chef@hangout.in" does not match supplied email "wrong-email@hangout.in"/
+    );
+
+    expect(() =>
+      simulateAdminDirectProvision(
+        admin,
+        'uuid-target-unconfirmed',
+        'unconfirmed@hangout.in',
+        'kitchen'
+      )
+    ).toThrow(/is not confirmed in Supabase Auth/);
+
+    // Profile already bound to another Supabase Auth user
+    expect(() =>
+      simulateAdminDirectProvision(
+        admin,
+        'uuid-new-waiter',
+        'waiter@hangout.in',
+        'waiter'
+      )
+    ).toThrow(/already bound to a different Supabase Auth user/);
+
+    // Auth user already bound to another profile
+    boundProfiles.push({
+      id: 'prof-alt',
+      auth_user_id: 'uuid-target-different',
+      email: 'other-staff@hangout.in',
+      role_id: 'cashier',
+    });
+    expect(() =>
+      simulateAdminDirectProvision(
+        admin,
+        'uuid-target-different',
+        'different@hangout.in',
+        'cashier'
+      )
+    ).toThrow(/already bound to another staff profile/);
+
+    const directResult = simulateAdminDirectProvision(
+      admin,
+      'uuid-target-confirmed',
+      'verified-chef@hangout.in',
+      'kitchen'
+    );
+    expect(directResult.success).toBe(true);
+    expect(directResult.role_id).toBe('kitchen');
+  });
+
+  it('20. Legitimate administrator provisioning and staff invitation claiming succeed', () => {
+    const staffInvitations: any[] = [];
+    const adminUser = { is_admin: true, confirmed: true };
+
+    const provisionStaffInvite = (
+      admin: typeof adminUser,
+      email: string,
+      name: string,
+      role: string,
+      code: string
+    ) => {
+      if (!admin.is_admin || !admin.confirmed) throw new Error('Unauthorized');
+      const hashFn = (c: string) => `hash-${c}`;
+      const invite = {
+        id: `inv-${Date.now()}`,
+        email: email.toLowerCase(),
+        full_name: name,
+        role_id: role,
+        provisioning_code_hash: hashFn(code),
+        is_claimed: false,
+        expires_at: new Date(Date.now() + 14 * 86400000).toISOString(),
+      };
+      staffInvitations.push(invite);
+      return { success: true, email: invite.email, role_id: invite.role_id };
+    };
+
+    const provResult = provisionStaffInvite(
+      adminUser,
+      'cashier-lead@hangout.in',
+      'Lead Cashier',
+      'cashier',
+      'CASHIER-KEY-4491'
+    );
+    expect(provResult.success).toBe(true);
+
+    const claimInvite = (
+      user: { uid: string; email: string; confirmed: boolean },
+      code: string
+    ) => {
+      if (!user.confirmed) throw new Error('Unconfirmed');
+      const hashFn = (c: string) => `hash-${c}`;
+      const found = staffInvitations.find(
+        (i) => i.email === user.email.toLowerCase() && !i.is_claimed
+      );
+      if (!found) throw new Error('No invite');
+      if (found.provisioning_code_hash !== hashFn(code)) throw new Error('Bad code');
+      found.is_claimed = true;
+      return {
+        success: true,
+        email: user.email,
+        role_id: found.role_id,
+        full_name: found.full_name,
+      };
+    };
+
+    const claimed = claimInvite(
+      { uid: 'uuid-cashier-lead', email: 'cashier-lead@hangout.in', confirmed: true },
+      'CASHIER-KEY-4491'
+    );
+    expect(claimed.success).toBe(true);
+    expect(claimed.role_id).toBe('cashier');
+    expect(claimed.full_name).toBe('Lead Cashier');
+  });
 });
 

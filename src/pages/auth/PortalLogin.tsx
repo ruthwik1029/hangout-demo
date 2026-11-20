@@ -166,7 +166,7 @@ export const PortalLogin: React.FC = () => {
                 type="text"
                 value={provisioningCode}
                 onChange={(e) => setProvisioningCode(e.target.value)}
-                placeholder="e.g. HANGOUT-ADMIN-BOOTSTRAP-2026"
+                placeholder="Enter provisioning code (if claiming access)"
                 className="w-full px-3 py-2 text-xs rounded-xl border border-brand-border focus:border-brand-black focus:outline-none"
               />
             </div>
