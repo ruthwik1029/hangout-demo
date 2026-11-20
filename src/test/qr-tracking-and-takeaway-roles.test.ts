@@ -114,6 +114,69 @@ describe('Phase 2: Customer Order History & Guest Recovery', () => {
     const recovered = await lookupGuestOrder('2026-999', '1111111111');
     expect(recovered).toBeNull();
   });
+
+  it('rejects guest order recovery when only 4 digits are supplied (prevents brute-force harvesting)', async () => {
+    const mockOrder: Order = {
+      id: 'ord-rec-3',
+      order_number: '2026-777',
+      order_type: 'TAKEAWAY',
+      customer_name_snapshot: 'Pooja Verma',
+      customer_mobile_snapshot: '9876543210',
+      guest_access_token: 'secret-token-777',
+      status: 'PENDING',
+      order_status: 'PENDING',
+      subtotal: 200,
+      discount_amount: 0,
+      tax_amount: 0,
+      total_amount: 200,
+      payment_status: 'PAID',
+      payment_method: 'UPI_DEMO',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      tax_breakdown: { is_gst_enabled: false, cgst: 0, sgst: 0, total_tax: 0, cgst_rate: 0, sgst_rate: 0 },
+      items: [],
+    };
+
+    localStorage.setItem('hangout_orders_store', JSON.stringify([mockOrder]));
+
+    // Supplying only 4 digits (e.g. 3210) must be rejected
+    const recoveredShort = await lookupGuestOrder('2026-777', '3210');
+    expect(recoveredShort).toBeNull();
+
+    // Supplying exact 10 digits succeeds
+    const recoveredFull = await lookupGuestOrder('2026-777', '9876543210');
+    expect(recoveredFull).not.toBeNull();
+    expect(recoveredFull?.id).toBe('ord-rec-3');
+  });
+
+  it('recovers guest order when exact guest_access_token is provided', async () => {
+    const mockOrder: Order = {
+      id: 'ord-rec-4',
+      order_number: '2026-666',
+      order_type: 'TAKEAWAY',
+      customer_name_snapshot: 'Devendra',
+      customer_mobile_snapshot: '9123456789',
+      guest_access_token: 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90',
+      status: 'PENDING',
+      order_status: 'PENDING',
+      subtotal: 250,
+      discount_amount: 0,
+      tax_amount: 0,
+      total_amount: 250,
+      payment_status: 'PAID',
+      payment_method: 'UPI_DEMO',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      tax_breakdown: { is_gst_enabled: false, cgst: 0, sgst: 0, total_tax: 0, cgst_rate: 0, sgst_rate: 0 },
+      items: [],
+    };
+
+    localStorage.setItem('hangout_orders_store', JSON.stringify([mockOrder]));
+
+    const recovered = await lookupGuestOrder('2026-666', 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90');
+    expect(recovered).not.toBeNull();
+    expect(recovered?.order_number).toBe('2026-666');
+  });
 });
 
 describe('Phase 3: Takeaway Operations Workflow & State Machine', () => {
@@ -248,3 +311,4 @@ describe('Phase 4: Role-Based Access Control & Portals', () => {
     expect(restored.full_name).toBe('Operations Manager');
   });
 });
+

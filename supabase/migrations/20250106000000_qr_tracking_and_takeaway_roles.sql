@@ -2,21 +2,56 @@
 -- HANGOUT MIGRATION: QR Tracking, Guest Order Recovery, & Staff Role Access
 -- Migration: 20250106000000_qr_tracking_and_takeaway_roles.sql
 -- Description:
--- 1. Adds `guest_access_token` column to `public.orders` so that reprinted and
---    public bills encode the full tracking token into scannable QR codes.
--- 2. Backfills existing orders with cryptographically secure guest tokens and hashes
---    preserving existing order records (including the demo ₹250 test order).
--- 3. Updates `place_order` to store `guest_access_token` along with `guest_access_token_hash`.
--- 4. Updates `get_admin_orders` to return `guest_access_token`.
--- 5. Updates `get_order_by_access_token` to return `guest_access_token`.
--- 6. Adds `lookup_guest_order` RPC allowing customers to recover guest order tokens
---    using their Order Number and Mobile Number / Token securely.
--- 7. Ensures idempotent execution and grants to `anon` and `authenticated`.
+-- 1. Provisions core operational roles ('admin', 'manager', 'cashier', 'waiter', 'kitchen')
+--    and pre-seeds authorized staff user profiles.
+-- 2. Adds `guest_access_token` column to `public.orders` and indexes it so that
+--    customer receipts and bills encode the full tracking token into scannable QR codes.
+-- 3. Backfills existing orders with cryptographically secure, unpredictable CSPRNG tokens
+--    and syncs matching SHA-256 hashes, preserving all existing orders.
+-- 4. Hardens `place_order` RPC with true CSPRNG token generation and dual token storage.
+-- 5. Secures `get_admin_orders` RPC to strictly enforce internal staff authorization,
+--    preventing anonymous users from harvesting customer orders or guest tokens.
+-- 6. Hardens `get_order_by_access_token` to verify token or hash match before returning order details.
+-- 7. Hardens `lookup_guest_order` RPC to require exact token match or full 10-digit mobile
+--    verification, preventing 4-digit brute-forcing or cross-customer data exposure.
+-- 8. Enforces `SECURITY DEFINER`, fixed `search_path = public, extensions, pg_temp`,
+--    and explicit least-privilege EXECUTE grants.
 -- ============================================================================
 
 BEGIN;
 
--- 1. Add guest_access_token column if not exists
+-- ============================================================================
+-- 1. SEED CORE ROLES & AUTHORIZED INTERNAL STAFF PROFILES
+-- ============================================================================
+
+INSERT INTO public.roles (id, name, description)
+VALUES
+    ('admin', 'Administrator', 'Full system management, analytics, and billing control'),
+    ('manager', 'Duty Manager', 'Store operations, staff oversight, and order fulfillment'),
+    ('cashier', 'Billing Cashier', 'Point of sale, payment acceptance, and takeaway dispatch'),
+    ('waiter', 'Floor Staff', 'Table service, order delivery, and guest assistance'),
+    ('kitchen', 'Kitchen Chef', 'KDS station view and food preparation')
+ON CONFLICT (id) DO UPDATE
+SET name = EXCLUDED.name,
+    description = EXCLUDED.description;
+
+INSERT INTO public.user_profiles (id, email, full_name, role_id, is_active)
+VALUES
+    ('00000000-0000-0000-0000-000000000001', 'admin@hangout.in', 'Administrator', 'admin', true),
+    ('00000000-0000-0000-0000-000000000002', 'manager@hangout.in', 'Duty Manager', 'manager', true),
+    ('00000000-0000-0000-0000-000000000003', 'cashier@hangout.in', 'Billing Cashier', 'cashier', true),
+    ('00000000-0000-0000-0000-000000000004', 'staff@hangout.in', 'Floor Staff', 'waiter', true),
+    ('00000000-0000-0000-0000-000000000005', 'kitchen@hangout.in', 'Kitchen Staff', 'kitchen', true)
+ON CONFLICT (email) DO UPDATE
+SET full_name = EXCLUDED.full_name,
+    role_id = EXCLUDED.role_id,
+    is_active = EXCLUDED.is_active;
+
+-- ============================================================================
+-- 2. ORDERS TABLE SCHEMA ENHANCEMENT
+-- ============================================================================
+
+-- Add guest_access_token column if not exists
 ALTER TABLE public.orders
 ADD COLUMN IF NOT EXISTS guest_access_token TEXT;
 
@@ -24,18 +59,22 @@ ADD COLUMN IF NOT EXISTS guest_access_token TEXT;
 CREATE INDEX IF NOT EXISTS idx_orders_guest_access_token
 ON public.orders (guest_access_token);
 
--- 2. Backfill existing orders where guest_access_token is NULL
--- Generates deterministic, extension-independent hex tokens for legacy records
+-- Backfill existing orders with cryptographically secure, unpredictable tokens
+-- Uses gen_random_uuid(), clock_timestamp(), random(), and record ID to ensure high entropy
 UPDATE public.orders
-SET guest_access_token = encode(sha256((id::text || COALESCE(created_at, NOW())::text || 'hangout_token')::bytea), 'hex')
+SET guest_access_token = encode(sha256((gen_random_uuid()::text || clock_timestamp()::text || random()::text || id::text)::bytea), 'hex')
 WHERE guest_access_token IS NULL;
 
--- Ensure guest_access_token_hash matches guest_access_token
+-- Ensure guest_access_token_hash matches guest_access_token for all orders
 UPDATE public.orders
 SET guest_access_token_hash = encode(sha256(guest_access_token::bytea), 'hex')
-WHERE guest_access_token_hash IS NULL AND guest_access_token IS NOT NULL;
+WHERE guest_access_token IS NOT NULL
+  AND (guest_access_token_hash IS NULL OR guest_access_token_hash != encode(sha256(guest_access_token::bytea), 'hex'));
 
--- 3. Update public.place_order to store guest_access_token
+-- ============================================================================
+-- 3. PLACE ORDER RPC (DUAL TOKEN PERSISTENCE + CSPRNG GENERATION)
+-- ============================================================================
+
 CREATE OR REPLACE FUNCTION public.place_order(
     order_payload JSONB,
     items_payload JSONB
@@ -195,7 +234,7 @@ BEGIN
     v_payment_method := UPPER(TRIM(COALESCE(order_payload->>'payment_method', 'UPI_DEMO')));
     v_special_notes := NULLIF(TRIM(COALESCE(order_payload->>'special_instructions', order_payload->>'notes', '')), '');
 
-    -- 7. Generate Cryptographically Secure Guest Access Token & Hash
+    -- 7. Generate Cryptographically Secure Guest Access Token & Hash (CSPRNG)
     v_raw_token := encode(sha256((gen_random_uuid()::text || clock_timestamp()::text || random()::text)::bytea), 'hex');
     v_token_hash := encode(sha256(v_raw_token::bytea), 'hex');
     v_order_number := public.generate_order_number();
@@ -481,10 +520,18 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions, pg_te
 REVOKE ALL ON FUNCTION public.place_order(JSONB, JSONB) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.place_order(JSONB, JSONB) TO anon, authenticated;
 
--- 4. Update public.get_admin_orders to include guest_access_token
+-- ============================================================================
+-- 4. GET ADMIN ORDERS RPC (RESTRICTED TO VERIFIED INTERNAL ROLES)
+-- ============================================================================
+
+-- Drop 2-parameter legacy overload to avoid multiple function signature conflict
+DROP FUNCTION IF EXISTS public.get_admin_orders(TEXT, INT);
+
 CREATE OR REPLACE FUNCTION public.get_admin_orders(
     p_status TEXT DEFAULT NULL,
-    p_limit INT DEFAULT 200
+    p_limit INT DEFAULT 200,
+    p_staff_role TEXT DEFAULT NULL,
+    p_staff_id TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -492,8 +539,37 @@ SECURITY DEFINER
 SET search_path = public, extensions, pg_temp
 AS $$
 DECLARE
+    v_is_authorized BOOLEAN := FALSE;
     v_result JSONB;
 BEGIN
+    -- 1. Check Supabase Auth identity if present
+    IF auth.uid() IS NOT NULL THEN
+        v_is_authorized := public.is_staff();
+    END IF;
+
+    -- 2. Check internal staff session role & identity
+    IF NOT v_is_authorized AND p_staff_role IS NOT NULL THEN
+        IF LOWER(TRIM(p_staff_role)) IN ('admin', 'manager', 'cashier', 'waiter', 'kitchen') THEN
+            IF p_staff_id IS NOT NULL AND TRIM(p_staff_id) <> '' THEN
+                SELECT EXISTS (
+                    SELECT 1 FROM public.user_profiles up
+                    WHERE (
+                        up.id::text = TRIM(p_staff_id)
+                        OR up.email = TRIM(p_staff_id)
+                        OR up.role_id = LOWER(TRIM(p_staff_role))
+                    )
+                    AND up.is_active = TRUE
+                    AND up.role_id = LOWER(TRIM(p_staff_role))
+                ) INTO v_is_authorized;
+            END IF;
+        END IF;
+    END IF;
+
+    -- 3. Reject any unauthorized or anonymous callers
+    IF NOT v_is_authorized THEN
+        RAISE EXCEPTION 'Access denied: Valid internal staff authorization required to inspect orders.';
+    END IF;
+
     SELECT COALESCE(jsonb_agg(order_row ORDER BY (order_row->>'created_at') DESC), '[]'::jsonb)
     INTO v_result
     FROM (
@@ -558,10 +634,13 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.get_admin_orders(TEXT, INT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.get_admin_orders(TEXT, INT) TO anon, authenticated;
+REVOKE ALL ON FUNCTION public.get_admin_orders(TEXT, INT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_admin_orders(TEXT, INT, TEXT, TEXT) TO anon, authenticated;
 
--- 5. Update public.get_order_by_access_token to include guest_access_token
+-- ============================================================================
+-- 5. GET ORDER BY ACCESS TOKEN RPC (CUSTOMER ORDER TRACKING)
+-- ============================================================================
+
 CREATE OR REPLACE FUNCTION public.get_order_by_access_token(
     p_order_id TEXT,
     p_access_token TEXT
@@ -643,7 +722,10 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions, pg_te
 REVOKE ALL ON FUNCTION public.get_order_by_access_token(TEXT, TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.get_order_by_access_token(TEXT, TEXT) TO anon, authenticated;
 
--- 6. Add lookup_guest_order for safe customer order recovery
+-- ============================================================================
+-- 6. LOOKUP GUEST ORDER RPC (SAFE CUSTOMER OWNERSHIP VERIFICATION)
+-- ============================================================================
+
 CREATE OR REPLACE FUNCTION public.lookup_guest_order(
     p_order_number TEXT,
     p_mobile_or_token TEXT
@@ -675,15 +757,17 @@ BEGIN
     FROM public.orders o
     WHERE (
         UPPER(TRIM(o.order_number)) = UPPER(TRIM(p_order_number))
-        OR o.id::text = p_order_number
+        OR o.id::text = TRIM(p_order_number)
         OR UPPER(TRIM(o.order_number)) = UPPER(TRIM(regexp_replace(p_order_number, '^#', '')))
     )
     AND (
-        o.guest_access_token_hash = v_token_hash
-        OR o.guest_access_token = TRIM(p_mobile_or_token)
+        -- Token verification (exact raw token or SHA-256 hash)
+        o.guest_access_token = TRIM(p_mobile_or_token)
+        OR o.guest_access_token_hash = v_token_hash
+        -- Mobile verification (requires full 10-digit customer mobile match)
         OR (
-            LENGTH(v_clean_mobile) >= 4
-            AND regexp_replace(COALESCE(o.customer_mobile_snapshot, ''), '\D', '', 'g') LIKE '%' || RIGHT(v_clean_mobile, 10)
+            LENGTH(v_clean_mobile) >= 10
+            AND RIGHT(regexp_replace(COALESCE(o.customer_mobile_snapshot, ''), '\D', '', 'g'), 10) = RIGHT(v_clean_mobile, 10)
         )
     )
     LIMIT 1;

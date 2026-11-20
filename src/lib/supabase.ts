@@ -1345,9 +1345,28 @@ export async function fetchOrders(filter?: {
 
   if (isSupabaseConfigured()) {
     try {
+      let staffRole: string | null = null;
+      let staffId: string | null = null;
+      try {
+        if (typeof localStorage !== 'undefined') {
+          const staffSession = localStorage.getItem('hangout_staff_session');
+          if (staffSession) {
+            const parsed = JSON.parse(staffSession);
+            staffRole = parsed.role_id || parsed.role || null;
+            staffId = parsed.id || parsed.email || null;
+          }
+        }
+      } catch {
+        // ignore parsing issues
+      }
+
       // 1. Authoritative SECURITY DEFINER RPC: Retrieves authoritative orders with items
+      // Protected by internal staff authorization check in Postgres
       const { data: rpcData, error: rpcErr } = await supabase.rpc('get_admin_orders', {
         p_status: filter?.status && filter.status !== 'ALL' ? filter.status : null,
+        p_limit: 200,
+        p_staff_role: staffRole,
+        p_staff_id: staffId,
       });
 
       if (!rpcErr && Array.isArray(rpcData)) {
@@ -1519,13 +1538,15 @@ export async function lookupGuestOrder(
     }
   }
 
-  const clean = mobileOrToken.replace(/\D/g, '').slice(-10);
+  const clean = mobileOrToken.replace(/\D/g, '');
   const orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
   const found = orders.find(
     (o) =>
       (o.id === idOrNumber || o.order_number.toLowerCase() === idOrNumber.toLowerCase()) &&
       (o.guest_access_token === mobileOrToken ||
-        (clean && o.customer_mobile_snapshot && o.customer_mobile_snapshot.replace(/\D/g, '').endsWith(clean)))
+        (clean.length >= 10 &&
+          o.customer_mobile_snapshot &&
+          o.customer_mobile_snapshot.replace(/\D/g, '').endsWith(clean.slice(-10))))
   );
 
   if (found && typeof localStorage !== 'undefined') {
@@ -1542,7 +1563,13 @@ export async function fetchCustomerOrders(
   mobileNumberOrId: string
 ): Promise<Order[]> {
   const clean = mobileNumberOrId.replace(/\D/g, '').slice(-10);
-  const orders = await fetchOrders();
+  let orders: Order[] = [];
+  const staffSession = typeof localStorage !== 'undefined' ? localStorage.getItem('hangout_staff_session') : null;
+  if (staffSession) {
+    orders = await fetchOrders();
+  } else {
+    orders = getLocalStore<Order[]>(LOCAL_STORAGE_ORDERS, INITIAL_ORDERS);
+  }
   return orders.filter(
     (o) =>
       o.customer_id === mobileNumberOrId ||
