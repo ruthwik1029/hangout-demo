@@ -182,7 +182,7 @@ export const CheckoutPage: React.FC = () => {
           taxBreakdown,
           totalAmount: grandTotal,
           paymentMethod: selectedPaymentMethod,
-          paymentStatus: 'UNPAID',
+          paymentStatus: 'PENDING',
           notes: specialOrderNote.trim() || undefined,
         });
         setPendingOrder(orderToPay);

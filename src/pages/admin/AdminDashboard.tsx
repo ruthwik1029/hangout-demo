@@ -13,6 +13,7 @@ import { useRealtimeOperationalSync } from '../../lib/realtime';
 import { Order, Customer, CafeSettings, AdminActivityLog } from '../../types';
 import { Button } from '../../components/common/Button';
 import { useToast } from '../../context/ToastContext';
+import { useAuth } from '../../context/AuthContext';
 import {
   DollarSign,
   TrendingUp,
@@ -32,11 +33,13 @@ import {
   Activity,
   Filter,
   RefreshCw,
+  Shield,
 } from 'lucide-react';
 
 export const AdminDashboard: React.FC = () => {
   const navigate = useNavigate();
   const { showToast } = useToast();
+  const { isDemoSession } = useAuth();
 
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -47,12 +50,13 @@ export const AdminDashboard: React.FC = () => {
   const [isTogglingPause, setIsTogglingPause] = useState(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [dbError, setDbError] = useState<string | null>(null);
 
   const loadData = useCallback(async (isManualRefresh = false) => {
     if (isManualRefresh) setIsRefreshing(true);
     try {
       const [allOrders, allCustomers, cafeSettings, logs] = await Promise.all([
-        fetchOrders(),
+        fetchOrders(undefined, { requireAuthoritative: !isDemoSession }),
         fetchAdminCustomers(),
         fetchCafeSettings(),
         fetchAdminActivityLogs(),
@@ -61,13 +65,15 @@ export const AdminDashboard: React.FC = () => {
       setCustomers(allCustomers);
       setSettings(cafeSettings);
       setActivityLogs(logs);
-    } catch (err) {
+      setDbError(null);
+    } catch (err: any) {
       console.error('Failed to load dashboard data:', err);
+      setDbError(err?.message || 'Database synchronization failure. Authoritative data could not be retrieved.');
     } finally {
       setIsLoading(false);
       if (isManualRefresh) setIsRefreshing(false);
     }
-  }, []);
+  }, [isDemoSession]);
 
   useEffect(() => {
     loadData();
@@ -235,6 +241,65 @@ export const AdminDashboard: React.FC = () => {
         subtitle="Real-time pulse, honest sales metrics, ordering controls, and audit feed."
       />
 
+      {/* Database Connection & Sync Error Banner */}
+      {dbError && (
+        <div className="p-4 rounded-3xl border border-red-500/30 bg-red-500/10 text-red-950 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-all">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl flex items-center justify-center font-bold bg-red-600 text-white shrink-0">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-heading font-black text-sm uppercase tracking-wider text-red-900">
+                  Database Synchronisation Error
+                </span>
+                <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-red-200 text-red-900">
+                  ACTION REQUIRED
+                </span>
+              </div>
+              <p className="text-xs text-red-700 mt-0.5">
+                {dbError}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              isLoading={isRefreshing}
+              onClick={() => loadData(true)}
+              leftIcon={<RefreshCw className="w-4 h-4 text-red-600" />}
+              className="border-red-300 hover:bg-red-100 text-red-900"
+            >
+              Retry Connection
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Demo Persona Sandbox Mode Banner */}
+      {isDemoSession && (
+        <div className="p-4 rounded-3xl border border-amber-500/30 bg-amber-500/10 text-amber-950 flex items-center gap-3 transition-all">
+          <div className="w-10 h-10 rounded-2xl flex items-center justify-center font-bold bg-amber-500 text-white shrink-0">
+            <Shield className="w-6 h-6" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-heading font-black text-sm uppercase tracking-wider text-amber-900">
+                Local Sandbox Mode (Demo Persona)
+              </span>
+              <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-200 text-amber-900">
+                BROWSER ONLY
+              </span>
+            </div>
+            <p className="text-xs text-amber-800 mt-0.5">
+              You are signed in as a local demo persona. Orders and metrics are isolated to this browser and will not synchronize to other devices or remote Supabase. To view live multi-device data, sign in with a verified staff account.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Operational Emergency Alert / Quick Pause Banner */}
       {settings && (
         <div
@@ -396,10 +461,10 @@ export const AdminDashboard: React.FC = () => {
             <DollarSign className="w-4 h-4 text-brand-yellow" />
           </div>
           <p className="font-heading font-extrabold text-2xl sm:text-3xl text-brand-black">
-            ₹{metrics.totalRevenue.toFixed(2)}
+            {dbError ? 'Sync Error' : `₹${metrics.totalRevenue.toFixed(2)}`}
           </p>
-          <p className="text-[11px] text-emerald-600 font-medium flex items-center gap-1">
-            <TrendingUp className="w-3.5 h-3.5" /> Honest total (paid & valid orders)
+          <p className={`text-[11px] font-medium flex items-center gap-1 ${dbError ? 'text-red-600' : isDemoSession ? 'text-amber-700' : 'text-emerald-600'}`}>
+            <TrendingUp className="w-3.5 h-3.5" /> {dbError ? 'Unavailable (DB fetch failed)' : isDemoSession ? 'Local sandbox total (browser only)' : 'Honest total (paid & valid cloud orders)'}
           </p>
         </div>
 
@@ -410,10 +475,10 @@ export const AdminDashboard: React.FC = () => {
             <Clock className="w-4 h-4 text-brand-yellow" />
           </div>
           <p className="font-heading font-extrabold text-2xl sm:text-3xl text-brand-black">
-            {metrics.totalOrders}
+            {dbError ? '--' : metrics.totalOrders}
           </p>
           <p className="text-[11px] text-brand-muted font-medium">
-            Placed tickets in active window
+            {dbError ? 'Unreachable' : 'Placed tickets in active window'}
           </p>
         </div>
 
@@ -424,10 +489,10 @@ export const AdminDashboard: React.FC = () => {
             <CheckCircle2 className="w-4 h-4 text-emerald-600" />
           </div>
           <p className="font-heading font-extrabold text-2xl sm:text-3xl text-brand-black text-emerald-700">
-            {metrics.completedCount}
+            {dbError ? '--' : metrics.completedCount}
           </p>
           <p className="text-[11px] text-brand-muted font-medium">
-            Fulfilled & dispatched successfully
+            {dbError ? 'Unreachable' : 'Fulfilled & dispatched successfully'}
           </p>
         </div>
 
@@ -438,10 +503,10 @@ export const AdminDashboard: React.FC = () => {
             <AlertTriangle className="w-4 h-4 text-amber-500" />
           </div>
           <p className="font-heading font-extrabold text-2xl sm:text-3xl text-brand-black text-amber-700">
-            {metrics.pendingCount}
+            {dbError ? '--' : metrics.pendingCount}
           </p>
           <p className="text-[11px] text-brand-muted font-medium">
-            Awaiting cashier/manager acceptance
+            {dbError ? 'Unreachable' : 'Awaiting cashier/manager acceptance'}
           </p>
         </div>
 
@@ -452,10 +517,10 @@ export const AdminDashboard: React.FC = () => {
             <XCircle className="w-4 h-4 text-red-500" />
           </div>
           <p className="font-heading font-extrabold text-2xl sm:text-3xl text-brand-black text-red-700">
-            {metrics.cancelledCount}
+            {dbError ? '--' : metrics.cancelledCount}
           </p>
           <p className="text-[11px] text-brand-muted font-medium">
-            Rejected or customer-cancelled
+            {dbError ? 'Unreachable' : 'Rejected or customer-cancelled'}
           </p>
         </div>
 
@@ -466,10 +531,10 @@ export const AdminDashboard: React.FC = () => {
             <TrendingUp className="w-4 h-4 text-brand-yellow" />
           </div>
           <p className="font-heading font-extrabold text-2xl sm:text-3xl text-brand-black">
-            ₹{metrics.aov.toFixed(2)}
+            {dbError ? '--' : `₹${metrics.aov.toFixed(2)}`}
           </p>
           <p className="text-[11px] text-brand-muted font-medium">
-            Calculated across paid receipts
+            {dbError ? 'Unreachable' : 'Calculated across paid receipts'}
           </p>
         </div>
 
@@ -480,10 +545,10 @@ export const AdminDashboard: React.FC = () => {
             <Users className="w-4 h-4 text-brand-yellow" />
           </div>
           <p className="font-heading font-extrabold text-2xl sm:text-3xl text-brand-black">
-            {metrics.totalCustomers}
+            {dbError ? '--' : metrics.totalCustomers}
           </p>
           <p className="text-[11px] text-brand-muted font-medium">
-            Real guest profiles registered
+            {dbError ? 'Unreachable' : 'Real guest profiles registered'}
           </p>
         </div>
 
@@ -494,10 +559,12 @@ export const AdminDashboard: React.FC = () => {
             <Flame className="w-4 h-4 text-amber-500" />
           </div>
           <p className="font-heading font-black text-base text-brand-black truncate">
-            {metrics.mostOrderedItem ? metrics.mostOrderedItem.name : 'No items ordered yet'}
+            {dbError ? '--' : (metrics.mostOrderedItem ? metrics.mostOrderedItem.name : 'No items ordered yet')}
           </p>
           <p className="text-[11px] text-brand-muted font-medium">
-            {metrics.mostOrderedItem
+            {dbError
+              ? 'Unreachable'
+              : metrics.mostOrderedItem
               ? `${metrics.mostOrderedItem.quantity} portions ordered (₹${metrics.mostOrderedItem.revenue.toFixed(0)})`
               : 'Waiting for orders'}
           </p>

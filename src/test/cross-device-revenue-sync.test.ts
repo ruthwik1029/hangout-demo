@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import * as supabaseModule from '../lib/supabase';
 import {
   fetchOrders,
   createOrder,
   processSimulatedPayment,
+  supabase,
 } from '../lib/supabase';
 import { Order, OrderStatus } from '../types';
+import fs from 'fs';
+import path from 'path';
 
 describe('Cross-Device Revenue Synchronisation & Authoritative Accounting', () => {
   beforeEach(() => {
@@ -413,6 +417,187 @@ describe('Cross-Device Revenue Synchronisation & Authoritative Accounting', () =
         .reduce((sum, o) => sum + o.total_amount, 0);
 
       expect(allRevenue).toBe(430.00);
+    });
+  });
+
+  describe('4. Migration 07 & Cross-Device Persistent Constraint Safety', () => {
+    it('verifies Migration 07 updates place_order to insert PENDING and satisfies check constraint', () => {
+      const migrationPath = path.resolve(
+        __dirname,
+        '../../supabase/migrations/20250107000000_fix_orders_payment_status_constraint.sql'
+      );
+      expect(fs.existsSync(migrationPath)).toBe(true);
+
+      const content = fs.readFileSync(migrationPath, 'utf-8');
+
+      // Verify idempotent function replacement
+      expect(content).toContain('CREATE OR REPLACE FUNCTION public.place_order');
+
+      // Verify insertion uses PENDING, NOT UNPAID
+      expect(content).toMatch(/INSERT INTO public\.orders[\s\S]*?'PENDING'/);
+      expect(content).not.toMatch(/INSERT INTO public\.orders[\s\S]*?'UNPAID'/);
+
+      // Verify returned JSON includes payment_status PENDING
+      expect(content).toContain("'payment_status', 'PENDING'");
+
+      // Verify transaction safety and permissions
+      expect(content).toContain('BEGIN;');
+      expect(content).toContain('COMMIT;');
+      expect(content).toContain('GRANT EXECUTE ON FUNCTION public.place_order(JSONB, JSONB) TO anon, authenticated;');
+    });
+
+    it('createOrder creates order with PENDING payment status by default, matching the constraint', async () => {
+      const order = await createOrder({
+        customerName: 'Rohit Verma',
+        customerMobile: '9876501234',
+        orderType: 'TAKEAWAY',
+        subtotal: 238.10,
+        taxAmount: 11.90,
+        totalAmount: 250.00,
+        items: [
+          {
+            menuItemId: 'd0000000-0000-0000-0000-000000000001',
+            name: 'Classic Chicken Shawarma',
+            basePrice: 160,
+            quantity: 1,
+            totalPrice: 160,
+          },
+        ],
+      });
+
+      expect(order).toBeDefined();
+      expect(order.payment_status).toBe('PENDING');
+      expect(['PENDING', 'PROCESSING', 'PAID', 'FAILED', 'REFUNDED']).toContain(order.payment_status);
+    });
+
+    it('surfaces database error instead of silent localStorage fallback when requireAuthoritative is true', async () => {
+      vi.stubEnv('VITE_TEST_LIVE_SUPABASE', 'true');
+      const rpcSpy = vi.spyOn(supabase, 'rpc').mockResolvedValue({
+        data: null,
+        error: {
+          code: '42501',
+          message: 'permission denied for function get_admin_orders',
+          details: null,
+          hint: null,
+        },
+      } as any);
+
+      try {
+        await expect(
+          fetchOrders(undefined, { requireAuthoritative: true })
+        ).rejects.toThrow(/Database Synchronisation Error/);
+      } finally {
+        vi.unstubAllEnvs();
+        rpcSpy.mockRestore();
+      }
+    });
+
+    it('preserves local sandbox mode for demo persona sessions without throwing', async () => {
+      localStorage.setItem('hangout_is_demo_session', 'true');
+      localStorage.setItem(
+        'hangout_orders_store',
+        JSON.stringify([
+          {
+            id: 'ord-demo-sandbox-1',
+            order_number: 'ORD-DEMO-01',
+            total_amount: 250.0,
+            payment_status: 'PAID',
+            order_status: 'ACCEPTED',
+            status: 'ACCEPTED',
+            created_at: new Date().toISOString(),
+            items: [],
+          },
+        ])
+      );
+
+      // fetchOrders should gracefully return the sandbox orders
+      const orders = await fetchOrders();
+      expect(orders.length).toBe(1);
+      expect(orders[0].id).toBe('ord-demo-sandbox-1');
+      expect(orders[0].total_amount).toBe(250.0);
+    });
+
+    it('ensures two devices querying authoritative orders compute the exact same revenue', async () => {
+      const sharedOrders: Order[] = [
+        {
+          id: 'ord-cloud-001',
+          order_number: 'ORD-20261120-101',
+          order_type: 'TAKEAWAY',
+          customer_name_snapshot: 'Priya Sen',
+          customer_mobile_snapshot: '9876543210',
+          subtotal: 238.10,
+          discount_amount: 0,
+          tax_amount: 11.90,
+          total_amount: 250.00,
+          payment_method: 'UPI',
+          payment_status: 'PAID',
+          order_status: 'ACCEPTED',
+          status: 'ACCEPTED',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          items: [],
+        },
+        {
+          id: 'ord-cloud-002',
+          order_number: 'ORD-20261120-102',
+          order_type: 'DINING',
+          customer_name_snapshot: 'Rahul Mehta',
+          customer_mobile_snapshot: '9876543211',
+          subtotal: 333.33,
+          discount_amount: 0,
+          tax_amount: 16.67,
+          total_amount: 350.00,
+          payment_method: 'CASH',
+          payment_status: 'PENDING',
+          order_status: 'PENDING',
+          status: 'PENDING',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          items: [],
+        },
+      ];
+
+      // Laptop calculation
+      const laptopSettled = sharedOrders.filter(
+        (o) => o.payment_status === 'PAID' && o.status !== 'CANCELLED' && o.status !== 'REJECTED'
+      );
+      const laptopRevenue = laptopSettled.reduce((acc, o) => acc + o.total_amount, 0);
+
+      // Mobile calculation on the same cloud dataset
+      const mobileSettled = sharedOrders.filter(
+        (o) => o.payment_status === 'PAID' && o.status !== 'CANCELLED' && o.status !== 'REJECTED'
+      );
+      const mobileRevenue = mobileSettled.reduce((acc, o) => acc + o.total_amount, 0);
+
+      expect(laptopRevenue).toBe(250.00);
+      expect(mobileRevenue).toBe(250.00);
+      expect(laptopRevenue).toEqual(mobileRevenue);
+    });
+
+    it('displays error message and sync failure indicators instead of false 0 revenue when DB fails', () => {
+      const dbError = 'Database Synchronisation Error (42501): permission denied for function get_admin_orders';
+      const isDemoSession = false;
+      const metrics = {
+        totalRevenue: 0,
+        totalOrders: 0,
+      };
+
+      // Dashboard logic for card 1
+      const revenueDisplay = dbError ? 'Sync Error' : `₹${metrics.totalRevenue.toFixed(2)}`;
+      const revenueSubtitle = dbError
+        ? 'Unavailable (DB fetch failed)'
+        : isDemoSession
+        ? 'Local sandbox total (browser only)'
+        : 'Honest total (paid & valid cloud orders)';
+
+      // Dashboard logic for card 2
+      const ordersDisplay = dbError ? '--' : metrics.totalOrders;
+      const ordersSubtitle = dbError ? 'Unreachable' : 'Placed tickets in active window';
+
+      expect(revenueDisplay).toBe('Sync Error');
+      expect(revenueSubtitle).toBe('Unavailable (DB fetch failed)');
+      expect(ordersDisplay).toBe('--');
+      expect(ordersSubtitle).toBe('Unreachable');
     });
   });
 });

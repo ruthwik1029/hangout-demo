@@ -74,7 +74,10 @@ if (typeof window !== 'undefined' && supabaseAnonKey) {
 }
 
 export const isSupabaseConfigured = (): boolean => {
-  if (import.meta.env.MODE === 'test' && !import.meta.env.VITE_TEST_LIVE_SUPABASE) {
+  if (import.meta.env.VITE_TEST_LIVE_SUPABASE === 'true') {
+    return true;
+  }
+  if (import.meta.env.MODE === 'test') {
     return false;
   }
   return (
@@ -1239,7 +1242,7 @@ export async function createOrder(
       if (rpcResult.discount_amount !== undefined) createdOrder.discount_amount = rpcResult.discount_amount;
       if (rpcResult.tax_amount !== undefined) createdOrder.tax_amount = rpcResult.tax_amount;
       if (rpcResult.total_amount !== undefined) createdOrder.total_amount = rpcResult.total_amount;
-      createdOrder.payment_status = (rpcResult.payment_status as PaymentStatus) || 'UNPAID';
+      createdOrder.payment_status = (rpcResult.payment_status as PaymentStatus) || 'PENDING';
       createdOrder.order_status = (rpcResult.order_status as OrderStatus) || 'PENDING';
       createdOrder.status = createdOrder.order_status;
 
@@ -1335,13 +1338,21 @@ export async function createOrder(
   return createdOrder;
 }
 
-export async function fetchOrders(filter?: {
-  status?: string;
-  orderType?: string;
-  paymentStatus?: string;
-  search?: string;
-}): Promise<Order[]> {
+export async function fetchOrders(
+  filter?: {
+    status?: string;
+    orderType?: string;
+    paymentStatus?: string;
+    search?: string;
+  },
+  options?: {
+    requireAuthoritative?: boolean;
+  }
+): Promise<Order[]> {
   let serverOrders: Order[] | null = null;
+  const isDemo = typeof localStorage !== 'undefined' && localStorage.getItem('hangout_is_demo_session') === 'true';
+  const hasStaffSession = typeof localStorage !== 'undefined' && localStorage.getItem('hangout_staff_session') !== null;
+  const shouldRequireAuthoritative = options?.requireAuthoritative ?? (!isDemo && hasStaffSession && isSupabaseConfigured());
 
   if (isSupabaseConfigured()) {
     try {
@@ -1360,12 +1371,20 @@ export async function fetchOrders(filter?: {
           items: Array.isArray(o.items) ? o.items : [],
         }));
       } else if (rpcErr) {
-        // Anonymous or unauthenticated clients are denied access as intended by Postgres RLS & Grants
-        // Do not attempt an insecure client-side table dump.
+        if (shouldRequireAuthoritative) {
+          throw new Error(
+            `Database Synchronisation Error (${rpcErr.code || 'ACCESS_DENIED'}): ${rpcErr.message || 'Unable to retrieve authoritative cloud orders.'}`
+          );
+        }
       }
-    } catch (err) {
+    } catch (err: unknown) {
+      if (shouldRequireAuthoritative) {
+        throw err instanceof Error ? err : new Error('Failed to connect to authoritative database.');
+      }
       console.warn('Supabase fetchOrders network attempt failed, using local store:', err);
     }
+  } else if (options?.requireAuthoritative) {
+    throw new Error('Database Synchronisation Error (NOT_CONFIGURED): Authoritative cloud database is not configured.');
   }
 
   // Authoritative Server Data Reconciliation:

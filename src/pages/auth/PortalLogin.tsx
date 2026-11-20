@@ -15,7 +15,7 @@ export const PortalLogin: React.FC = () => {
   const [provisioningCode, setProvisioningCode] = React.useState('');
   const [authLoading, setAuthLoading] = React.useState(false);
   const [authError, setAuthError] = React.useState('');
-  const [showRealLogin, setShowRealLogin] = React.useState(false);
+  const [showRealLogin, setShowRealLogin] = React.useState(true);
 
   const handleSupabaseLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,23 +107,28 @@ export const PortalLogin: React.FC = () => {
         </div>
       )}
 
-      {/* Production Supabase Auth Access Toggle */}
-      <div className="p-5 rounded-3xl bg-white border border-brand-border shadow-card-subtle space-y-3">
+      {/* Production Supabase Auth Access (Prominent for Cross-Device Synchronization) */}
+      <div className="p-5 rounded-3xl bg-white border-2 border-brand-black shadow-card-subtle space-y-3">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="font-heading font-bold text-sm text-brand-black">
-              Production Staff Authentication
-            </h3>
-            <p className="text-[11px] text-brand-muted">
-              Sign in with your verified Supabase Auth credentials to access authoritative remote database orders.
+            <div className="flex items-center gap-2">
+              <h3 className="font-heading font-black text-base text-brand-black">
+                Verified Cloud Staff Login
+              </h3>
+              <span className="text-[9px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                Multi-Device Live Sync
+              </span>
+            </div>
+            <p className="text-xs text-brand-muted mt-1">
+              Sign in with your registered staff email and password. This connects directly to the authoritative Supabase backend and ensures live orders and revenue synchronise across laptop and mobile devices.
             </p>
           </div>
           <button
             type="button"
             onClick={() => setShowRealLogin(!showRealLogin)}
-            className="text-xs font-bold text-brand-black underline px-2 py-1"
+            className="text-xs font-bold text-brand-black underline px-2 py-1 flex-shrink-0"
           >
-            {showRealLogin ? 'Hide Form' : 'Staff Sign In'}
+            {showRealLogin ? 'Hide Form' : 'Show Form'}
           </button>
         </div>
 
@@ -180,11 +185,16 @@ export const PortalLogin: React.FC = () => {
       </div>
 
       <div className="border-t border-brand-border pt-4">
-        <h2 className="font-heading font-extrabold text-base text-brand-black mb-1">
-          Demo Persona Showcase (Local Offline Mode)
-        </h2>
+        <div className="flex items-center gap-2 mb-1">
+          <h2 className="font-heading font-extrabold text-base text-brand-black">
+            Demo Persona Showcase (Local Offline Sandbox)
+          </h2>
+          <span className="text-[9px] font-bold uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
+            Browser Only
+          </span>
+        </div>
         <p className="text-xs text-brand-muted mb-4">
-          Select a role below to simulate the customer or staff dashboard UI in your local browser sandbox.
+          Select a persona below to simulate customer or staff UI flows inside your local browser storage. Orders placed in demo mode are stored purely in this browser's local sandbox and do not synchronize across devices.
         </p>
       </div>
 
